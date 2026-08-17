@@ -1,565 +1,305 @@
 (()=>{"use strict";
 
 let V=null;
-let GuildStore=null;
-let storage=null;
 let unpatchers=[];
-let successShown=false;
+let timer=null;
+let guildsOnlySamples=[];
+let animatedSamples=[];
+let jsxNames=new Map();
+let sampleCounts={guildsOnly:0,animated:0,jsx:0};
 
-const VERSION="1.1-settings";
-
-const DEFAULTS={
-  width:112,
-  height:24,
-  fontSize:10,
-  iconSize:20,
-  padding:4
-};
-
-const LIMITS={
-  width:[72,220],
-  height:[18,56],
-  fontSize:[7,20],
-  iconSize:[12,48],
-  padding:[0,16]
-};
+const VERSION="1.2-layout-probe";
+const DIMENSION_KEYS=new Set([
+  "width","height","minWidth","maxWidth","minHeight","maxHeight",
+  "flex","flexGrow","flexShrink","flexBasis",
+  "left","right","top","bottom",
+  "margin","marginLeft","marginRight","marginTop","marginBottom",
+  "marginHorizontal","marginVertical",
+  "padding","paddingLeft","paddingRight","paddingTop","paddingBottom",
+  "paddingHorizontal","paddingVertical",
+  "gap","rowGap","columnGap",
+  "itemSize","estimatedItemSize","size","length","offset"
+]);
 
 function api(){
-  try{
-    if(typeof vendetta!=="undefined" && vendetta)return vendetta;
-  }catch{}
+  try{if(typeof vendetta!=="undefined"&&vendetta)return vendetta;}catch{}
   return globalThis.vendetta ?? globalThis.bunny ?? globalThis.revenge ?? null;
 }
 
 function toast(msg){
   try{(V??api())?.ui?.toasts?.showToast?.(String(msg));}
-  catch(e){console.error("[ServerNames] toast failed:",e);}
+  catch(e){console.error("[ServerNames Layout Probe] toast failed:",e);}
 }
 
-function ReactObj(){
-  return V?.metro?.common?.React ?? globalThis.React ?? null;
-}
-
-function RN(){
-  return V?.metro?.common?.ReactNative ?? globalThis.ReactNative ?? null;
-}
-
-function clampNumber(value,key){
-  const fallback=DEFAULTS[key];
-  const range=LIMITS[key];
-  let n=Number(value);
-  if(!Number.isFinite(n))n=fallback;
-  n=Math.round(n);
-  return Math.max(range[0],Math.min(range[1],n));
-}
-
-function ensureSettings(){
-  if(!storage)return;
-  for(const key of Object.keys(DEFAULTS)){
-    if(storage[key]==null || !Number.isFinite(Number(storage[key]))){
-      storage[key]=DEFAULTS[key];
-    }else{
-      storage[key]=clampNumber(storage[key],key);
-    }
-  }
-}
-
-function cfg(){
-  return {
-    width:clampNumber(storage?.width,"width"),
-    height:clampNumber(storage?.height,"height"),
-    fontSize:clampNumber(storage?.fontSize,"fontSize"),
-    iconSize:clampNumber(storage?.iconSize,"iconSize"),
-    padding:clampNumber(storage?.padding,"padding")
-  };
-}
-
-function getGuild(guildId){
-  if(!guildId || !GuildStore)return null;
-  try{return GuildStore.getGuild?.(String(guildId)) ?? null;}
-  catch{return null;}
-}
-
-function iconUrl(guild){
-  if(!guild)return null;
-
+function componentName(C){
   try{
-    if(typeof guild.getIconURL==="function"){
-      const u=guild.getIconURL(64,false) ?? guild.getIconURL();
-      if(typeof u==="string" && u)return u;
-    }
+    return C?.displayName ?? C?.name ?? C?.type?.displayName ?? C?.type?.name ?? "(anonymous)";
+  }catch{return "(name-error)";}
+}
+
+function flattenStyle(style){
+  try{
+    const StyleSheet=V?.metro?.common?.ReactNative?.StyleSheet;
+    if(StyleSheet?.flatten)return StyleSheet.flatten(style) ?? {};
   }catch{}
 
-  if(guild.id && guild.icon){
-    return `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.webp?size=64`;
+  if(Array.isArray(style)){
+    const out={};
+    for(const part of style){
+      const f=flattenStyle(part);
+      if(f&&typeof f==="object")Object.assign(out,f);
+    }
+    return out;
+  }
+  return style&&typeof style==="object" ? style : {};
+}
+
+function safeDimensions(style){
+  const flat=flattenStyle(style);
+  const result={};
+  if(!flat||typeof flat!=="object")return result;
+
+  for(const [k,v] of Object.entries(flat)){
+    if(DIMENSION_KEYS.has(k) && (typeof v==="number" || typeof v==="string")){
+      // Only layout values; no colors, URIs, labels, IDs, or text.
+      result[k]=v;
+    }
+  }
+  return result;
+}
+
+function safeNumericObject(value,depth=0){
+  if(value==null||depth>3)return undefined;
+  if(typeof value==="number" || typeof value==="boolean")return value;
+  if(typeof value==="string"){
+    // Keep only strings that look like layout keywords/percentages, never IDs/text.
+    if(/^-?\d+(?:\.\d+)?%$/.test(value))return value;
+    if(/^(absolute|relative|row|column|center|stretch|auto|hidden|visible)$/.test(value))return value;
+    return undefined;
+  }
+  if(Array.isArray(value)){
+    const arr=value.slice(0,12).map(v=>safeNumericObject(v,depth+1)).filter(v=>v!==undefined);
+    return arr.length?arr:undefined;
+  }
+  if(typeof value==="object"){
+    const out={};
+    for(const [k,v] of Object.entries(value)){
+      // Whitelist layout-ish keys only.
+      if(!/(width|height|size|layout|offset|length|margin|padding|gap|flex|left|right|top|bottom|position|translate|scale|x$|y$)/i.test(k))continue;
+      const safe=safeNumericObject(v,depth+1);
+      if(safe!==undefined)out[k]=safe;
+    }
+    return Object.keys(out).length?out:undefined;
+  }
+  return undefined;
+}
+
+function inspectTree(node,path="root",depth=0,out=[]){
+  if(node==null || depth>6 || out.length>=80)return out;
+
+  if(Array.isArray(node)){
+    for(let i=0;i<Math.min(node.length,12);i++){
+      inspectTree(node[i],`${path}[${i}]`,depth+1,out);
+    }
+    return out;
   }
 
-  return null;
-}
+  if(typeof node!=="object")return out;
 
-function initials(name){
-  const parts=String(name??"").trim().split(/\s+/).filter(Boolean);
-  if(!parts.length)return "?";
-  if(parts.length===1)return parts[0].slice(0,2).toUpperCase();
-  return (parts[0][0]+parts[1][0]).toUpperCase();
-}
+  if(node.type){
+    const name=componentName(node.type);
+    const dims=safeDimensions(node.props?.style);
+    const props=Object.keys(node.props??{})
+      .filter(k=>!["children","guild","guildId","id","label","name","text","title","source","uri","url"].includes(k))
+      .slice(0,25);
 
-function CompactVisual({guild}){
-  const React=ReactObj();
-  const R=RN();
-  if(!React || !R?.View || !R?.Text)return null;
-
-  const c=cfg();
-  const iconSize=Math.min(c.iconSize,c.height);
-  const url=iconUrl(guild);
-
-  const icon=url && R.Image
-    ? React.createElement(R.Image,{
-        source:{uri:url},
-        resizeMode:"cover",
-        style:{
-          width:iconSize,
-          height:iconSize,
-          borderRadius:3,
-          flexShrink:0
-        }
-      })
-    : React.createElement(
-        R.View,
-        {
-          style:{
-            width:iconSize,
-            height:iconSize,
-            borderRadius:3,
-            flexShrink:0,
-            alignItems:"center",
-            justifyContent:"center",
-            backgroundColor:"#404249"
-          }
-        },
-        React.createElement(
-          R.Text,
-          {
-            allowFontScaling:false,
-            numberOfLines:1,
-            style:{
-              color:"#f2f3f5",
-              fontSize:Math.max(6,Math.min(c.fontSize-1,9)),
-              fontWeight:"700",
-              textAlign:"center"
-            }
-          },
-          initials(guild.name)
-        )
-      );
-
-  return React.createElement(
-    R.View,
-    {
-      pointerEvents:"none",
-      accessibilityElementsHidden:true,
-      importantForAccessibility:"no-hide-descendants",
-      style:{
-        width:c.width,
-        height:c.height,
-        flexDirection:"row",
-        alignItems:"center",
-        paddingHorizontal:4,
-        backgroundColor:"#2b2d31",
-        borderRadius:5,
-        overflow:"hidden"
-      }
-    },
-    icon,
-    React.createElement(
-      R.Text,
-      {
-        numberOfLines:1,
-        ellipsizeMode:"tail",
-        allowFontScaling:false,
-        style:{
-          flex:1,
-          marginLeft:5,
-          marginRight:5,
-          color:"#f2f3f5",
-          fontSize:c.fontSize,
-          lineHeight:Math.max(c.fontSize+3,12),
-          fontWeight:"600"
-        }
-      },
-      guild.name
-    )
-  );
-}
-
-/*
- * Base this on v0.7's confirmed-working direct GuildsBarGuild.type patch.
- * Deliberately do NOT patch GuildsBarAnimatedItemWrapper height: that was the
- * major geometry change introduced when the ~21-cell virtualization regression
- * appeared. The returned guild row itself reports the compact touch height and
- * lets Discord's wrapper measure it naturally.
- */
-function afterGuildRender(args,ret){
-  try{
-    const props=args?.[0];
-    const guild=getGuild(props?.guildId);
-    if(!guild)return;
-
-    const React=ReactObj();
-    const R=RN();
-    if(!React || !R?.View)return;
-
-    const c=cfg();
-    const touchHeight=c.height+(c.padding*2);
-
-    if(!successShown){
-      successShown=true;
-      setTimeout(()=>toast(`Server Names ${VERSION}: full-list row patch active.`),200);
+    if(
+      /guild|list|scroll|flat|flash|bar|navigation|drawer|sidebar|panel/i.test(name) ||
+      Object.keys(dims).length
+    ){
+      out.push({path,name,dims,props});
     }
 
-    return React.createElement(
-      R.View,
-      {
-        style:{
-          width:c.width,
-          height:touchHeight,
-          position:"relative",
-          alignItems:"center",
-          justifyContent:"center",
-          overflow:"visible"
-        }
-      },
+    inspectTree(node.props?.children,`${path}>${name}`,depth+1,out);
+  }
 
-      // Preserve Discord's original interactive row, but hide its visuals.
-      // Opacity 0 keeps React Native hit testing active.
-      React.createElement(
-        R.View,
-        {
-          style:{
-            position:"absolute",
-            left:0,
-            top:0,
-            width:c.width,
-            height:touchHeight,
-            opacity:0,
-            overflow:"hidden",
-            zIndex:0,
-            elevation:0
-          }
-        },
-        ret
-      ),
+  return out;
+}
 
-      // Visible row. Padding above/below belongs to the touch target, not the box.
-      React.createElement(
-        R.View,
-        {
-          pointerEvents:"none",
-          style:{
-            position:"absolute",
-            left:0,
-            top:c.padding,
-            width:c.width,
-            height:c.height,
-            zIndex:10,
-            elevation:10
-          }
-        },
-        React.createElement(CompactVisual,{guild})
-      )
-    );
-  }catch(error){
-    console.error("[ServerNames] GuildsBarGuild patch failed:",error);
+function afterGuildsOnly(args,ret){
+  try{
+    sampleCounts.guildsOnly++;
+    if(guildsOnlySamples.length<3){
+      guildsOnlySamples.push(inspectTree(ret));
+    }
+  }catch(e){
+    console.error("[ServerNames Layout Probe] GuildsOnly inspect failed:",e);
   }
 }
 
-function widenSidebar(ret){
-  const React=ReactObj();
-  if(!React || !ret || typeof ret!=="object")return ret;
+function afterAnimated(args,ret){
+  try{
+    sampleCounts.animated++;
+    if(animatedSamples.length>=8)return;
 
-  const c=cfg();
-  const sidebarWidth=c.width+8;
+    const props=args?.[0]??{};
+    animatedSamples.push({
+      props:Object.keys(props)
+        .filter(k=>!["id","label","children","externalChildren","expandedChildren"].includes(k))
+        .slice(0,35),
+      returnStyle:safeDimensions(ret?.props?.style),
+      draggedItemSize:safeNumericObject(props.draggedItemSize),
+      layout:safeNumericObject(props.layout),
+      config:safeNumericObject(props.config),
+      styles:safeNumericObject(props.styles),
+      cutouts:safeNumericObject(props.cutouts)
+    });
+  }catch(e){
+    console.error("[ServerNames Layout Probe] animated inspect failed:",e);
+  }
+}
+
+function afterJsx(args,ret){
+  try{
+    sampleCounts.jsx++;
+    const C=args?.[0];
+    const name=componentName(C);
+    if(!/guild|list|scroll|flat|flash|bar|navigation|drawer|sidebar|panel/i.test(name))return;
+
+    if(!jsxNames.has(name) && jsxNames.size<80){
+      const props=args?.[1]??ret?.props??{};
+      jsxNames.set(name,{
+        props:Object.keys(props)
+          .filter(k=>!["id","guildId","guild","label","name","text","title","source","uri","url","children"].includes(k))
+          .slice(0,35),
+        style:safeDimensions(props.style)
+      });
+    }
+  }catch{}
+}
+
+function formatObj(o){
+  try{return JSON.stringify(o);}
+  catch{return "{}";}
+}
+
+function report(){
+  const lines=[
+    `Version: ${VERSION}`,
+    "",
+    "PRIVACY:",
+    "Only component names, prop NAMES, and layout-related numeric/style values are included.",
+    "Server names, guild IDs, usernames, channels, messages, labels, image URLs, and text values are excluded.",
+    "",
+    `GuildsOnly renders sampled: ${sampleCounts.guildsOnly}`,
+    `Animated-item renders observed: ${sampleCounts.animated}`,
+    `JSX calls observed: ${sampleCounts.jsx}`,
+    "",
+    "=== GUILDS-ONLY RETURN TREE ==="
+  ];
+
+  if(!guildsOnlySamples.length){
+    lines.push("No GuildsOnly sample captured.");
+  }else{
+    guildsOnlySamples[0].forEach((x,i)=>{
+      lines.push(`${i+1}. ${x.path} :: ${x.name}`);
+      if(Object.keys(x.dims).length)lines.push(`   dimensions=${formatObj(x.dims)}`);
+      if(x.props.length)lines.push(`   props=${x.props.join(",")}`);
+    });
+  }
+
+  lines.push("","=== GUILDS BAR ANIMATED ITEM ===");
+  if(!animatedSamples.length){
+    lines.push("No GuildsBarAnimatedItemWrapper sample captured.");
+  }else{
+    animatedSamples.slice(0,4).forEach((x,i)=>{
+      lines.push(`${i+1}. props=${x.props.join(",")}`);
+      if(Object.keys(x.returnStyle).length)lines.push(`   returnStyle=${formatObj(x.returnStyle)}`);
+      for(const key of ["draggedItemSize","layout","config","styles","cutouts"]){
+        if(x[key]!==undefined)lines.push(`   ${key}=${formatObj(x[key])}`);
+      }
+    });
+  }
+
+  lines.push("","=== GUILD/LIST COMPONENTS SEEN ===");
+  let i=0;
+  for(const [name,x] of jsxNames){
+    i++;
+    lines.push(`${i}. ${name}`);
+    if(x.props.length)lines.push(`   props=${x.props.join(",")}`);
+    if(Object.keys(x.style).length)lines.push(`   style=${formatObj(x.style)}`);
+  }
+
+  const text=lines.join("\n");
+  console.log("[ServerNames Layout Probe]\n"+text);
 
   try{
-    return React.cloneElement(ret,{
-      style:[
-        ret.props?.style,
-        {
-          width:sidebarWidth,
-          minWidth:sidebarWidth,
-          maxWidth:sidebarWidth
-        }
-      ]
+    V?.ui?.alerts?.showConfirmationAlert?.({
+      title:"Server Names layout probe",
+      content:text,
+      confirmText:"OK",
+      onConfirm:()=>{},
+      secondaryConfirmText:"Copy",
+      onConfirmSecondary:()=>{
+        try{
+          const cb=V?.metro?.common?.clipboard;
+          const r=cb?.setString?.(text);
+          if(r?.catch)r.catch(()=>{});
+          toast("Layout probe copied.");
+        }catch(e){console.error("[ServerNames Layout Probe] copy failed:",e);}
+      },
+      isDismissable:true
     });
-  }catch{
-    return ret;
+  }catch(e){
+    console.error("[ServerNames Layout Probe] alert failed:",e);
+    toast("Layout probe complete; alert API failed. See console.");
   }
 }
 
-function patchTypeByName(name,callback,required=false){
+function patchType(name,cb){
   const patcher=V.patcher ?? V.api?.patcher;
-  const wrapper=V.metro.findByTypeName?.(name);
-
-  if(wrapper && typeof wrapper.type==="function"){
-    unpatchers.push(patcher.after("type",wrapper,callback));
+  const w=V.metro.findByTypeName?.(name);
+  if(w&&typeof w.type==="function"){
+    unpatchers.push(patcher.after("type",w,cb));
     return true;
   }
-
-  if(required)throw new Error(`${name} component was not found.`);
   return false;
-}
-
-function NumericSetting({label,settingKey,suffix}){
-  const React=ReactObj();
-  const R=RN();
-  const current=clampNumber(storage?.[settingKey],settingKey);
-  const [text,setText]=React.useState(String(current));
-
-  const commit=(raw)=>{
-    const value=clampNumber(raw,settingKey);
-    storage[settingKey]=value;
-    setText(String(value));
-    toast(`${label}: ${value}${suffix??""}. Reload Discord to apply everywhere.`);
-  };
-
-  return React.createElement(
-    R.View,
-    {
-      style:{
-        marginHorizontal:16,
-        marginVertical:6,
-        padding:12,
-        borderRadius:8,
-        backgroundColor:"#2b2d31",
-        flexDirection:"row",
-        alignItems:"center"
-      }
-    },
-    React.createElement(
-      R.View,
-      {style:{flex:1,paddingRight:12}},
-      React.createElement(
-        R.Text,
-        {
-          style:{
-            color:"#f2f3f5",
-            fontSize:15,
-            fontWeight:"600"
-          }
-        },
-        label
-      ),
-      React.createElement(
-        R.Text,
-        {
-          style:{
-            color:"#b5bac1",
-            fontSize:12,
-            marginTop:2
-          }
-        },
-        `Allowed: ${LIMITS[settingKey][0]}–${LIMITS[settingKey][1]}${suffix??""}`
-      )
-    ),
-    React.createElement(R.TextInput,{
-      value:text,
-      onChangeText:setText,
-      onEndEditing:()=>commit(text),
-      onSubmitEditing:()=>commit(text),
-      keyboardType:"number-pad",
-      selectTextOnFocus:true,
-      maxLength:4,
-      style:{
-        width:70,
-        minHeight:38,
-        paddingHorizontal:8,
-        paddingVertical:6,
-        borderRadius:6,
-        backgroundColor:"#1e1f22",
-        color:"#f2f3f5",
-        fontSize:15,
-        textAlign:"center"
-      }
-    })
-  );
-}
-
-function SettingsPage(){
-  const React=ReactObj();
-  const R=RN();
-  if(!React || !R?.View || !R?.Text || !R?.ScrollView || !R?.TextInput){
-    return null;
-  }
-
-  const [,rerender]=React.useReducer(x=>x+1,0);
-
-  const reset=()=>{
-    for(const [key,value] of Object.entries(DEFAULTS))storage[key]=value;
-    rerender();
-    toast("Server Names settings reset. Reload Discord to apply.");
-  };
-
-  const c=cfg();
-  const touchHeight=c.height+(2*c.padding);
-
-  return React.createElement(
-    R.ScrollView,
-    {
-      style:{flex:1,backgroundColor:"#111214"},
-      contentContainerStyle:{paddingVertical:12,paddingBottom:36}
-    },
-
-    React.createElement(
-      R.Text,
-      {
-        style:{
-          marginHorizontal:16,
-          marginBottom:4,
-          color:"#f2f3f5",
-          fontSize:20,
-          fontWeight:"700"
-        }
-      },
-      "Server Names"
-    ),
-
-    React.createElement(
-      R.Text,
-      {
-        style:{
-          marginHorizontal:16,
-          marginBottom:10,
-          color:"#b5bac1",
-          fontSize:13,
-          lineHeight:18
-        }
-      },
-      `Current touch target: ${touchHeight}px tall. Changes are saved immediately; reload Discord after editing layout values.`
-    ),
-
-    React.createElement(NumericSetting,{
-      key:"width-"+c.width,
-      label:"Width",
-      settingKey:"width",
-      suffix:" px"
-    }),
-    React.createElement(NumericSetting,{
-      key:"height-"+c.height,
-      label:"Height",
-      settingKey:"height",
-      suffix:" px"
-    }),
-    React.createElement(NumericSetting,{
-      key:"font-"+c.fontSize,
-      label:"Font size",
-      settingKey:"fontSize",
-      suffix:" px"
-    }),
-    React.createElement(NumericSetting,{
-      key:"icon-"+c.iconSize,
-      label:"Icon size",
-      settingKey:"iconSize",
-      suffix:" px"
-    }),
-    React.createElement(NumericSetting,{
-      key:"padding-"+c.padding,
-      label:"Vertical padding",
-      settingKey:"padding",
-      suffix:" px"
-    }),
-
-    React.createElement(
-      R.View,
-      {style:{marginHorizontal:16,marginTop:12}},
-      React.createElement(
-        R.Pressable ?? R.TouchableOpacity,
-        {
-          onPress:reset,
-          style:{
-            minHeight:44,
-            borderRadius:8,
-            backgroundColor:"#4e5058",
-            alignItems:"center",
-            justifyContent:"center",
-            paddingHorizontal:14
-          }
-        },
-        React.createElement(
-          R.Text,
-          {
-            style:{
-              color:"#ffffff",
-              fontSize:14,
-              fontWeight:"600"
-            }
-          },
-          "Reset defaults"
-        )
-      )
-    )
-  );
 }
 
 function start(){
   V=api();
   if(!V?.metro)throw new Error("Revenge Metro API not found.");
 
-  storage=V.plugin?.storage ?? null;
-  if(!storage)throw new Error("Revenge plugin storage was not provided.");
-  ensureSettings();
-
   const patcher=V.patcher ?? V.api?.patcher;
   if(!patcher?.after)throw new Error("Revenge patcher.after not found.");
 
-  const R=RN();
-  if(!ReactObj() || !R?.View || !R?.Text){
-    throw new Error("React/React Native components unavailable.");
+  const a=patchType("GuildsOnly",afterGuildsOnly);
+  const b=patchType("GuildsBarAnimatedItemWrapper",afterAnimated);
+
+  const jsxRuntime=
+    V.metro.findByProps?.("jsx","jsxs") ??
+    V.metro.findByProps?.("jsx","jsxDEV");
+
+  if(jsxRuntime){
+    if(typeof jsxRuntime.jsx==="function")unpatchers.push(patcher.after("jsx",jsxRuntime,afterJsx));
+    if(typeof jsxRuntime.jsxs==="function")unpatchers.push(patcher.after("jsxs",jsxRuntime,afterJsx));
+    if(typeof jsxRuntime.jsxDEV==="function")unpatchers.push(patcher.after("jsxDEV",jsxRuntime,afterJsx));
   }
 
-  GuildStore=
-    V.metro.findByStoreName?.("GuildStore") ??
-    V.metro.findByProps?.("getGuild","getGuilds") ??
-    null;
-
-  if(!GuildStore)throw new Error("GuildStore not found.");
-
-  patchTypeByName("GuildsBarGuild",afterGuildRender,true);
-
-  const sidebarPatched=patchTypeByName(
-    "GuildsOnly",
-    (args,ret)=>widenSidebar(ret),
-    false
-  );
-
-  patchTypeByName(
-    "GuildsBarUnreadBars",
-    (args,ret)=>widenSidebar(ret),
-    false
-  );
-
-  const c=cfg();
   toast(
-    `Server Names ${VERSION}: ${c.width}×${c.height}px, `+
-    `${c.padding}px padding; sidebar ${sidebarPatched?"widened":"fallback"}.`
+    `Server Names layout probe active. `+
+    `GuildsOnly=${a?"yes":"no"}, animated item=${b?"yes":"no"}. `+
+    `Open and scroll the server list; report appears in 15 seconds.`
   );
+
+  timer=setTimeout(report,15000);
 }
 
 function stop(){
-  for(const u of unpatchers.splice(0)){
-    try{u?.();}catch(e){console.error("[ServerNames] unpatch failed:",e);}
-  }
-
-  GuildStore=null;
-  storage=null;
-  successShown=false;
+  if(timer){clearTimeout(timer);timer=null;}
+  for(const u of unpatchers.splice(0)){try{u?.();}catch{}}
   V=null;
 }
 
-return {
-  default:{
-    onLoad:start,
-    onUnload:stop,
-    settings:SettingsPage
-  }
-};
+return {default:{onLoad:start,onUnload:stop}};
 })()

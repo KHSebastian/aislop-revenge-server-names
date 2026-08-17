@@ -1,6 +1,6 @@
 {
-  "name": "Server Names",
-  "description": "Compact Discord Android server-name sidebar with configurable dimensions.",
+  "name": "Server Names (Layout Probe)",
+  "description": "Privacy-preserving probe for Discord guild sidebar width and virtualized row geometry.",
   "authors": [
     {
       "name": "Local build",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "e692861188eeb066c75a15b9598e7e3920558743b1f63d19701072b6493bf12d",
+  "hash": "6e38d1240b595e05e787844a211002a5f21c1f5036cf44c0bc057cc376da31dc",
   "vendetta": {
     "icon": "ic_server"
   }
