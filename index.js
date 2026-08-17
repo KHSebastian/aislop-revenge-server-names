@@ -2,10 +2,10 @@
 let V=null;
 let GuildStore=null;
 let unpatchers=[];
-let replacements=0;
-let reportedSuccess=false;
+let patchMode="none";
+let successShown=false;
 
-const VERSION="0.6-targeted";
+const VERSION="0.7-virtualized";
 const WRAPPER_SIZE=56;
 const TILE_SIZE=48;
 
@@ -16,11 +16,6 @@ function api(){
 function toast(msg){
   try{(V??api())?.ui?.toasts?.showToast?.(String(msg));}
   catch(e){console.error("[ServerNames] toast failed:",e);}
-}
-
-function cname(C){
-  try{return C?.displayName ?? C?.name ?? C?.type?.displayName ?? C?.type?.name ?? "";}
-  catch{return "";}
 }
 
 function ReactObj(){
@@ -40,6 +35,8 @@ function guildName(guildId){
 function NameOverlay({name}){
   const React=ReactObj();
   const ReactNative=RN();
+  if(!React || !ReactNative?.View || !ReactNative?.Text)return null;
+
   const {View,Text}=ReactNative;
 
   return React.createElement(
@@ -86,22 +83,21 @@ function NameOverlay({name}){
   );
 }
 
-function GuildNameWrapped({original,guildId}){
+function wrapGuildResult(ret,guildId){
   const React=ReactObj();
   const ReactNative=RN();
-  const {View}=ReactNative;
+  if(!React || !ReactNative?.View || !ret)return ret;
+
   const name=guildName(guildId);
+  if(!name)return ret;
 
-  if(!name)return original;
-
-  replacements++;
-  if(!reportedSuccess && replacements>=1){
-    reportedSuccess=true;
-    setTimeout(()=>toast(`Server Names ${VERSION}: replacing guild icons.`),250);
+  if(!successShown){
+    successShown=true;
+    setTimeout(()=>toast(`Server Names ${VERSION}: live row patch active.`),200);
   }
 
   return React.createElement(
-    View,
+    ReactNative.View,
     {
       style:{
         width:WRAPPER_SIZE,
@@ -111,29 +107,49 @@ function GuildNameWrapped({original,guildId}){
         justifyContent:"center"
       }
     },
-    original,
+    ret,
     React.createElement(NameOverlay,{name})
   );
 }
 
-function hook(args,ret){
+/**
+ * Direct patch for React.memo / wrapper component.
+ * Because this patches the underlying render function, it is invoked when
+ * virtualized list cells are recycled for guilds that were not initially visible.
+ */
+function afterGuildRender(args,ret){
+  try{
+    const props=args?.[0];
+    const guildId=props?.guildId;
+    if(!guildId)return;
+    return wrapGuildResult(ret,String(guildId));
+  }catch(error){
+    console.error("[ServerNames] direct GuildsBarGuild render patch failed:",error);
+  }
+}
+
+/**
+ * Fallback for Discord builds where GuildsBarGuild is not exposed as a
+ * type-named wrapper. This is the older v0.6 behavior.
+ */
+function componentName(C){
+  try{
+    return C?.displayName ?? C?.name ?? C?.type?.displayName ?? C?.type?.name ?? "";
+  }catch{return "";}
+}
+
+function afterJsx(args,ret){
   try{
     const Component=args?.[0];
     const props=args?.[1] ?? ret?.props;
-    if(cname(Component)!=="GuildsBarGuild")return;
+    if(componentName(Component)!=="GuildsBarGuild")return;
 
     const guildId=props?.guildId;
     if(!guildId)return;
 
-    const React=ReactObj();
-    if(!React)return;
-
-    return React.createElement(GuildNameWrapped,{
-      original:ret,
-      guildId:String(guildId)
-    });
+    return wrapGuildResult(ret,String(guildId));
   }catch(error){
-    console.error("[ServerNames] GuildsBarGuild hook failed:",error);
+    console.error("[ServerNames] JSX fallback patch failed:",error);
   }
 }
 
@@ -156,31 +172,46 @@ function start(){
 
   if(!GuildStore)throw new Error("GuildStore not found.");
 
+  // Preferred path: Revenge exposes findByTypeName specifically for wrappers
+  // whose underlying React component is in `.type`.
+  const guildWrapper=V.metro.findByTypeName?.("GuildsBarGuild");
+
+  if(guildWrapper && typeof guildWrapper.type==="function"){
+    unpatchers.push(patcher.after("type",guildWrapper,afterGuildRender));
+    patchMode="direct-type";
+    toast(`Server Names ${VERSION}: direct virtualized-row patch installed.`);
+    return;
+  }
+
+  // Fallback to the v0.6 JSX interception if this Discord build exposes the
+  // component differently.
   const jsxRuntime=
     V.metro.findByProps?.("jsx","jsxs") ??
     V.metro.findByProps?.("jsx","jsxDEV");
 
-  if(!jsxRuntime)throw new Error("Discord JSX runtime not found.");
+  if(!jsxRuntime)throw new Error("GuildsBarGuild wrapper and Discord JSX runtime were both unavailable.");
 
   if(typeof jsxRuntime.jsx==="function")
-    unpatchers.push(patcher.after("jsx",jsxRuntime,hook));
+    unpatchers.push(patcher.after("jsx",jsxRuntime,afterJsx));
   if(typeof jsxRuntime.jsxs==="function")
-    unpatchers.push(patcher.after("jsxs",jsxRuntime,hook));
+    unpatchers.push(patcher.after("jsxs",jsxRuntime,afterJsx));
   if(typeof jsxRuntime.jsxDEV==="function")
-    unpatchers.push(patcher.after("jsxDEV",jsxRuntime,hook));
+    unpatchers.push(patcher.after("jsxDEV",jsxRuntime,afterJsx));
 
-  if(!unpatchers.length)throw new Error("No JSX runtime functions could be patched.");
+  if(!unpatchers.length)throw new Error("No patchable GuildsBarGuild path was found.");
 
-  toast(`Server Names ${VERSION} enabled. Open the server list.`);
+  patchMode="jsx-fallback";
+  toast(`Server Names ${VERSION}: JSX fallback installed.`);
 }
 
 function stop(){
   for(const u of unpatchers.splice(0)){
     try{u?.();}catch(e){console.error("[ServerNames] unpatch failed:",e);}
   }
+
   GuildStore=null;
-  replacements=0;
-  reportedSuccess=false;
+  patchMode="none";
+  successShown=false;
   V=null;
 }
 
