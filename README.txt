@@ -1,17 +1,19 @@
-Server Names v1.1
+Server Names v1.3
 
-Default settings:
+Defaults:
 - Width: 112 px
-- Height: 24 px (visible box)
+- Height: 24 px
 - Font size: 10 px
 - Icon size: 20 px
-- Vertical padding: 4 px above + 4 px below
+- Vertical padding: 4 px
 
-Default touch target height = 24 + 4 + 4 = 32 px.
+Key v1.3 changes:
+- Patches the guild FastList itemSize to visible height + 2x padding.
+- Widens the guild FastList itself.
+- Widens GuildsOnly when created.
+- Widens NavigationContent and its render-prop root where possible.
+- Retains the proven GuildsBarGuild.type visual row patch.
+- Settings remain persistent.
 
-This version is based on the v0.7 GuildsBarGuild.type hook, the last build
-confirmed to work through the full virtualized guild list. It intentionally
-does not patch GuildsBarAnimatedItemWrapper height.
-
-Revenge plugin settings are persistent. Open the plugin's Settings button to
-edit values; reload Discord after changes.
+IMPORTANT: Fully reload Discord after installation or any dimension change so
+FastList rebuilds its recycler geometry with the new item size.
