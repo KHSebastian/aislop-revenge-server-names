@@ -2,12 +2,18 @@
 let V=null;
 let GuildStore=null;
 let unpatchers=[];
-let patchMode="none";
 let successShown=false;
 
-const VERSION="0.7-virtualized";
-const WRAPPER_SIZE=56;
-const TILE_SIZE=48;
+const VERSION="0.8-compact";
+
+// Compact text-list geometry.
+// ~2x the old width and ~1/3 the old height.
+const SIDEBAR_WIDTH=120;
+const ROW_WIDTH=112;
+const ROW_HEIGHT=22;
+const ICON_SIZE=22;
+const NAME_GAP=5;
+const NAME_RIGHT_PAD=5;
 
 function api(){
   return globalThis.vendetta ?? globalThis.bunny ?? globalThis.revenge ?? null;
@@ -26,131 +32,287 @@ function RN(){
   return V?.metro?.common?.ReactNative ?? globalThis.ReactNative ?? null;
 }
 
-function guildName(guildId){
+function getGuild(guildId){
   if(!guildId || !GuildStore)return null;
-  try{return GuildStore.getGuild?.(String(guildId))?.name ?? null;}
+  try{return GuildStore.getGuild?.(String(guildId)) ?? null;}
   catch{return null;}
 }
 
-function NameOverlay({name}){
-  const React=ReactObj();
-  const ReactNative=RN();
-  if(!React || !ReactNative?.View || !ReactNative?.Text)return null;
+function iconUrl(guild){
+  if(!guild)return null;
 
-  const {View,Text}=ReactNative;
+  try{
+    if(typeof guild.getIconURL==="function"){
+      const u=guild.getIconURL(64,false) ?? guild.getIconURL();
+      if(typeof u==="string" && u)return u;
+    }
+  }catch{}
+
+  // Fallback to Discord's normal CDN icon location.
+  if(guild.id && guild.icon){
+    return `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.webp?size=64`;
+  }
+
+  return null;
+}
+
+function initials(name){
+  const parts=String(name??"").trim().split(/\s+/).filter(Boolean);
+  if(!parts.length)return "?";
+  if(parts.length===1)return parts[0].slice(0,2).toUpperCase();
+  return (parts[0][0]+parts[1][0]).toUpperCase();
+}
+
+function CompactGuildRow({guild}){
+  const React=ReactObj();
+  const R=RN();
+  if(!React || !R?.View || !R?.Text)return null;
+
+  const url=iconUrl(guild);
+  const icon = url && R.Image
+    ? React.createElement(R.Image,{
+        source:{uri:url},
+        resizeMode:"cover",
+        style:{
+          width:ICON_SIZE,
+          height:ICON_SIZE,
+          borderRadius:3,
+          flexShrink:0
+        }
+      })
+    : React.createElement(
+        R.View,
+        {
+          style:{
+            width:ICON_SIZE,
+            height:ICON_SIZE,
+            borderRadius:3,
+            flexShrink:0,
+            alignItems:"center",
+            justifyContent:"center",
+            backgroundColor:"#404249"
+          }
+        },
+        React.createElement(
+          R.Text,
+          {
+            allowFontScaling:false,
+            numberOfLines:1,
+            style:{
+              color:"#f2f3f5",
+              fontSize:8,
+              lineHeight:10,
+              fontWeight:"700",
+              textAlign:"center"
+            }
+          },
+          initials(guild.name)
+        )
+      );
 
   return React.createElement(
-    View,
+    R.View,
     {
       pointerEvents:"none",
       accessibilityElementsHidden:true,
       importantForAccessibility:"no-hide-descendants",
       style:{
-        position:"absolute",
-        left:(WRAPPER_SIZE-TILE_SIZE)/2,
-        top:(WRAPPER_SIZE-TILE_SIZE)/2,
-        width:TILE_SIZE,
-        height:TILE_SIZE,
-        borderRadius:12,
-        backgroundColor:"#2b2d31",
+        width:ROW_WIDTH,
+        height:ROW_HEIGHT,
+        flexDirection:"row",
         alignItems:"center",
-        justifyContent:"center",
-        paddingHorizontal:3,
-        paddingVertical:2,
-        zIndex:1000,
-        elevation:20
+        backgroundColor:"#2b2d31",
+        borderRadius:4,
+        overflow:"hidden"
       }
     },
+    icon,
     React.createElement(
-      Text,
+      R.Text,
       {
-        numberOfLines:4,
+        numberOfLines:1,
         ellipsizeMode:"tail",
-        adjustsFontSizeToFit:true,
-        minimumFontScale:0.45,
         allowFontScaling:false,
         style:{
-          width:TILE_SIZE-6,
+          flex:1,
+          marginLeft:NAME_GAP,
+          marginRight:NAME_RIGHT_PAD,
           color:"#f2f3f5",
-          fontSize:9,
-          lineHeight:10,
-          fontWeight:"600",
-          textAlign:"center"
+          fontSize:10,
+          lineHeight:13,
+          fontWeight:"600"
         }
       },
-      name
+      guild.name
     )
   );
 }
 
-function wrapGuildResult(ret,guildId){
+function compactOriginal(ret){
   const React=ReactObj();
-  const ReactNative=RN();
-  if(!React || !ReactNative?.View || !ret)return ret;
+  if(!React || !ret || typeof ret!=="object")return ret;
 
-  const name=guildName(guildId);
-  if(!name)return ret;
-
-  if(!successShown){
-    successShown=true;
-    setTimeout(()=>toast(`Server Names ${VERSION}: live row patch active.`),200);
+  try{
+    return React.cloneElement(ret,{
+      style:[
+        ret.props?.style,
+        {
+          width:ROW_WIDTH,
+          height:ROW_HEIGHT,
+          minWidth:ROW_WIDTH,
+          maxWidth:ROW_WIDTH,
+          minHeight:ROW_HEIGHT,
+          maxHeight:ROW_HEIGHT
+        }
+      ]
+    });
+  }catch{
+    return ret;
   }
-
-  return React.createElement(
-    ReactNative.View,
-    {
-      style:{
-        width:WRAPPER_SIZE,
-        height:WRAPPER_SIZE,
-        position:"relative",
-        alignItems:"center",
-        justifyContent:"center"
-      }
-    },
-    ret,
-    React.createElement(NameOverlay,{name})
-  );
 }
 
-/**
- * Direct patch for React.memo / wrapper component.
- * Because this patches the underlying render function, it is invoked when
- * virtualized list cells are recycled for guilds that were not initially visible.
- */
 function afterGuildRender(args,ret){
   try{
     const props=args?.[0];
-    const guildId=props?.guildId;
-    if(!guildId)return;
-    return wrapGuildResult(ret,String(guildId));
+    const guild=getGuild(props?.guildId);
+    if(!guild)return;
+
+    const React=ReactObj();
+    const R=RN();
+    if(!React || !R?.View)return;
+
+    if(!successShown){
+      successShown=true;
+      setTimeout(()=>toast(`Server Names ${VERSION}: compact rows active.`),200);
+    }
+
+    // Keep Discord's original interactive row in place (transparent) so its
+    // tap/long-press/accessibility behavior remains owned by Discord. The
+    // compact visual row sits above it and ignores pointer events.
+    const original=compactOriginal(ret);
+
+    return React.createElement(
+      R.View,
+      {
+        style:{
+          width:ROW_WIDTH,
+          height:ROW_HEIGHT,
+          minWidth:ROW_WIDTH,
+          maxWidth:ROW_WIDTH,
+          minHeight:ROW_HEIGHT,
+          maxHeight:ROW_HEIGHT,
+          position:"relative",
+          overflow:"visible"
+        }
+      },
+      React.createElement(
+        R.View,
+        {
+          style:{
+            position:"absolute",
+            left:0,
+            top:0,
+            width:ROW_WIDTH,
+            height:ROW_HEIGHT,
+            opacity:0.01,
+            overflow:"hidden"
+          }
+        },
+        original
+      ),
+      React.createElement(
+        R.View,
+        {
+          pointerEvents:"none",
+          style:{
+            position:"absolute",
+            left:0,
+            top:0,
+            width:ROW_WIDTH,
+            height:ROW_HEIGHT,
+            zIndex:1000,
+            elevation:20
+          }
+        },
+        React.createElement(CompactGuildRow,{guild})
+      )
+    );
   }catch(error){
-    console.error("[ServerNames] direct GuildsBarGuild render patch failed:",error);
+    console.error("[ServerNames] GuildsBarGuild patch failed:",error);
   }
 }
 
-/**
- * Fallback for Discord builds where GuildsBarGuild is not exposed as a
- * type-named wrapper. This is the older v0.6 behavior.
- */
-function componentName(C){
+function afterAnimatedItemRender(args,ret){
   try{
-    return C?.displayName ?? C?.name ?? C?.type?.displayName ?? C?.type?.name ?? "";
-  }catch{return "";}
+    const props=args?.[0];
+    const id=props?.id;
+
+    // Only compress wrappers that correspond to an actual guild. This avoids
+    // changing folders, Home/DMs, separators, or other special guild-bar rows.
+    if(!getGuild(id))return;
+
+    const React=ReactObj();
+    if(!React || !ret || typeof ret!=="object")return;
+
+    return React.cloneElement(ret,{
+      style:[
+        ret.props?.style,
+        {
+          width:ROW_WIDTH,
+          height:ROW_HEIGHT,
+          minWidth:ROW_WIDTH,
+          maxWidth:ROW_WIDTH,
+          minHeight:ROW_HEIGHT,
+          maxHeight:ROW_HEIGHT
+        }
+      ]
+    });
+  }catch(error){
+    console.error("[ServerNames] animated-item sizing patch failed:",error);
+  }
 }
 
-function afterJsx(args,ret){
+function widenRoot(ret){
+  const React=ReactObj();
+  if(!React || !ret || typeof ret!=="object")return ret;
+
   try{
-    const Component=args?.[0];
-    const props=args?.[1] ?? ret?.props;
-    if(componentName(Component)!=="GuildsBarGuild")return;
-
-    const guildId=props?.guildId;
-    if(!guildId)return;
-
-    return wrapGuildResult(ret,String(guildId));
-  }catch(error){
-    console.error("[ServerNames] JSX fallback patch failed:",error);
+    return React.cloneElement(ret,{
+      style:[
+        ret.props?.style,
+        {
+          width:SIDEBAR_WIDTH,
+          minWidth:SIDEBAR_WIDTH,
+          maxWidth:SIDEBAR_WIDTH
+        }
+      ]
+    });
+  }catch{
+    return ret;
   }
+}
+
+function afterGuildsOnlyRender(args,ret){
+  try{return widenRoot(ret);}
+  catch(error){console.error("[ServerNames] GuildsOnly width patch failed:",error);}
+}
+
+function afterUnreadBarsRender(args,ret){
+  try{return widenRoot(ret);}
+  catch(error){console.error("[ServerNames] unread-bar width patch failed:",error);}
+}
+
+function patchTypeByName(name,callback,required=false){
+  const patcher=V.patcher ?? V.api?.patcher;
+  const wrapper=V.metro.findByTypeName?.(name);
+
+  if(wrapper && typeof wrapper.type==="function"){
+    unpatchers.push(patcher.after("type",wrapper,callback));
+    return true;
+  }
+
+  if(required)throw new Error(`${name} component was not found.`);
+  return false;
 }
 
 function start(){
@@ -160,8 +322,8 @@ function start(){
   const patcher=V.patcher ?? V.api?.patcher;
   if(!patcher?.after)throw new Error("Revenge patcher.after not found.");
 
-  const ReactNative=RN();
-  if(!ReactObj() || !ReactNative?.View || !ReactNative?.Text){
+  const R=RN();
+  if(!ReactObj() || !R?.View || !R?.Text){
     throw new Error("React/React Native components unavailable.");
   }
 
@@ -172,36 +334,34 @@ function start(){
 
   if(!GuildStore)throw new Error("GuildStore not found.");
 
-  // Preferred path: Revenge exposes findByTypeName specifically for wrappers
-  // whose underlying React component is in `.type`.
-  const guildWrapper=V.metro.findByTypeName?.("GuildsBarGuild");
+  // The row patch is the core behavior and is required.
+  patchTypeByName("GuildsBarGuild",afterGuildRender,true);
 
-  if(guildWrapper && typeof guildWrapper.type==="function"){
-    unpatchers.push(patcher.after("type",guildWrapper,afterGuildRender));
-    patchMode="direct-type";
-    toast(`Server Names ${VERSION}: direct virtualized-row patch installed.`);
-    return;
-  }
+  // These sizing patches are best-effort because Discord occasionally changes
+  // which wrappers own the list geometry.
+  const itemPatched=patchTypeByName(
+    "GuildsBarAnimatedItemWrapper",
+    afterAnimatedItemRender,
+    false
+  );
 
-  // Fallback to the v0.6 JSX interception if this Discord build exposes the
-  // component differently.
-  const jsxRuntime=
-    V.metro.findByProps?.("jsx","jsxs") ??
-    V.metro.findByProps?.("jsx","jsxDEV");
+  const sidebarPatched=patchTypeByName(
+    "GuildsOnly",
+    afterGuildsOnlyRender,
+    false
+  );
 
-  if(!jsxRuntime)throw new Error("GuildsBarGuild wrapper and Discord JSX runtime were both unavailable.");
+  patchTypeByName(
+    "GuildsBarUnreadBars",
+    afterUnreadBarsRender,
+    false
+  );
 
-  if(typeof jsxRuntime.jsx==="function")
-    unpatchers.push(patcher.after("jsx",jsxRuntime,afterJsx));
-  if(typeof jsxRuntime.jsxs==="function")
-    unpatchers.push(patcher.after("jsxs",jsxRuntime,afterJsx));
-  if(typeof jsxRuntime.jsxDEV==="function")
-    unpatchers.push(patcher.after("jsxDEV",jsxRuntime,afterJsx));
-
-  if(!unpatchers.length)throw new Error("No patchable GuildsBarGuild path was found.");
-
-  patchMode="jsx-fallback";
-  toast(`Server Names ${VERSION}: JSX fallback installed.`);
+  toast(
+    `Server Names ${VERSION}: ` +
+    `row patch on; sidebar ${sidebarPatched?"widened":"width fallback"}; ` +
+    `item spacing ${itemPatched?"compact":"fallback"}.`
+  );
 }
 
 function stop(){
@@ -210,7 +370,6 @@ function stop(){
   }
 
   GuildStore=null;
-  patchMode="none";
   successShown=false;
   V=null;
 }
