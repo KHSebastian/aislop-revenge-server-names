@@ -7,7 +7,7 @@ let namedCalls=0;
 let candidates=new Map();
 let errors=[];
 
-const VERSION="0.4-probe";
+const VERSION="0.5-obfuscated";
 
 function api(){return globalThis.vendetta ?? globalThis.bunny ?? globalThis.revenge ?? null;}
 
@@ -39,6 +39,19 @@ function alertReport(text){
     console.error("[ServerNames Probe] alert failed",e);
     toast(text.slice(0,240));
   }
+}
+
+// Non-cryptographic, one-way short hash used only to correlate repeated values
+// in the diagnostic report without exposing actual guild names/IDs.
+function obfuscate(value){
+  if(value==null)return null;
+  const s=String(value);
+  let h=2166136261;
+  for(let i=0;i<s.length;i++){
+    h^=s.charCodeAt(i);
+    h=Math.imul(h,16777619);
+  }
+  return "ref_"+(h>>>0).toString(16).padStart(8,"0");
 }
 
 function cname(C){
@@ -78,7 +91,12 @@ function summarize(name,props){
   }catch{}
 
   const keys=safeKeys(props).join(",");
-  return {name:String(name),keys,guildName,guildId};
+  return {
+    name:String(name),
+    keys,
+    guildNameRef:obfuscate(guildName),
+    guildIdRef:obfuscate(guildId)
+  };
 }
 
 function hook(args,ret){
@@ -92,7 +110,7 @@ function hook(args,ret){
 
     if(looksInteresting(name,props)){
       const s=summarize(name,props);
-      const key=`${s.name}|${s.keys}|${s.guildName??""}|${s.guildId??""}`;
+      const key=`${s.name}|${s.keys}|${s.guildNameRef??""}|${s.guildIdRef??""}`;
       if(!candidates.has(key) && candidates.size<80) candidates.set(key,s);
     }
   }catch(e){
@@ -108,6 +126,8 @@ function report(){
     `Named component calls: ${namedCalls}`,
     `Interesting candidates: ${rows.length}`,
     "",
+    "Privacy: guild/server names and IDs are obfuscated before being stored in this report.",
+    ""
   ];
 
   if(rows.length===0){
@@ -122,8 +142,8 @@ function report(){
     rows.forEach((r,i)=>{
       lines.push(
         `${i+1}. ${r.name}` +
-        `${r.guildName ? ` | guild="${r.guildName}"` : ""}` +
-        `${r.guildId ? ` | id=${r.guildId}` : ""}`
+        `${r.guildNameRef ? ` | guild=${r.guildNameRef}` : ""}` +
+        `${r.guildIdRef ? ` | id=${r.guildIdRef}` : ""}`
       );
       lines.push(`   props: ${r.keys || "(none)"}`);
     });
@@ -161,7 +181,7 @@ function start(){
 
   if(!unpatchers.length) throw new Error("No JSX functions could be patched.");
 
-  toast("Server Names probe active — open the server list now. Report appears in 15 seconds.");
+  toast("Server Names obfuscated probe active — open the server list now. Report appears in 15 seconds.");
   timer=setTimeout(report,15000);
 }
 
