@@ -7,7 +7,8 @@
       "id": "0"
     }
   ],
-  "main": "src/index.js",
+  "main": "index.js",
+  "hash": "d7bbe75d6b50b126279a7902ade0626b5a2483c3547ea04b8161c54c37a10873",
   "vendetta": {
     "icon": "ic_server"
   }
