@@ -1,6 +1,6 @@
 {
   "name": "Server Names",
-  "description": "Compact Discord Android server-name sidebar with small icons.",
+  "description": "Compact Discord Android server-name sidebar with small icons and larger touch targets.",
   "authors": [
     {
       "name": "Local build",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "573b231e9e547169dcd482bb3cb265d0f41dcc8e5d778be22338f967c7326a19",
+  "hash": "afdab9d97256ca0ea70e076375c88d0afd9fb4c4b6ad45c8d680f7fd7dbef4d7",
   "vendetta": {
     "icon": "ic_server"
   }

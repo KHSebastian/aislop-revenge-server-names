@@ -2,18 +2,21 @@
 let V=null;
 let GuildStore=null;
 let unpatchers=[];
+let iconToGuild=new Map();
 let successShown=false;
+let unresolvedSeen=0;
 
-const VERSION="0.8-compact";
+const VERSION="1.0-recycled-cells";
 
-// Compact text-list geometry.
-// ~2x the old width and ~1/3 the old height.
-const SIDEBAR_WIDTH=120;
-const ROW_WIDTH=112;
-const ROW_HEIGHT=22;
-const ICON_SIZE=22;
+// Wider text list, but with a larger hit target than v0.8/v0.9.
+const SIDEBAR_WIDTH=128;
+const ROW_WIDTH=120;
+const ROW_HEIGHT=32;
+const VISUAL_HEIGHT=28;
+const ICON_SIZE=20;
+const H_PAD=4;
 const NAME_GAP=5;
-const NAME_RIGHT_PAD=5;
+const NAME_RIGHT_PAD=6;
 
 function api(){
   return globalThis.vendetta ?? globalThis.bunny ?? globalThis.revenge ?? null;
@@ -32,10 +35,103 @@ function RN(){
   return V?.metro?.common?.ReactNative ?? globalThis.ReactNative ?? null;
 }
 
-function getGuild(guildId){
-  if(!guildId || !GuildStore)return null;
-  try{return GuildStore.getGuild?.(String(guildId)) ?? null;}
+function guilds(){
+  try{
+    const all=GuildStore?.getGuilds?.();
+    return all && typeof all==="object" ? Object.values(all) : [];
+  }catch{
+    return [];
+  }
+}
+
+function rebuildGuildIndex(){
+  iconToGuild.clear();
+  for(const g of guilds()){
+    if(!g?.id)continue;
+
+    iconToGuild.set(String(g.id),g);
+
+    if(g.icon){
+      const key=String(g.icon);
+      // Only use an icon hash if it maps unambiguously.
+      if(!iconToGuild.has(key))iconToGuild.set(key,g);
+      else if(iconToGuild.get(key)!==g)iconToGuild.set(key,null);
+    }
+
+    try{
+      const u=typeof g.getIconURL==="function" ? (g.getIconURL(64,false) ?? g.getIconURL()) : null;
+      if(typeof u==="string" && u)iconToGuild.set(u,g);
+    }catch{}
+  }
+}
+
+function byId(id){
+  if(id==null)return null;
+  try{return GuildStore?.getGuild?.(String(id)) ?? null;}
   catch{return null;}
+}
+
+function resolveString(s){
+  if(typeof s!=="string" || !s)return null;
+
+  const direct=byId(s);
+  if(direct)return direct;
+
+  const cdn=s.match(/\/icons\/(\d{15,22})\//);
+  if(cdn){
+    const g=byId(cdn[1]);
+    if(g)return g;
+  }
+
+  const mapped=iconToGuild.get(s);
+  return mapped || null;
+}
+
+function resolveGuild(value,depth=0,seen=new Set()){
+  if(value==null || depth>3)return null;
+
+  if(typeof value==="string")return resolveString(value);
+  if(typeof value==="number")return byId(value);
+
+  if(typeof value!=="object")return null;
+  if(seen.has(value))return null;
+  seen.add(value);
+
+  const directIds=[
+    value.guildId,
+    value.guildID,
+    value.id,
+    value.guild?.id
+  ];
+
+  for(const id of directIds){
+    const g=byId(id);
+    if(g)return g;
+  }
+
+  if(value.guild?.name && value.guild?.id)return value.guild;
+  if(value.name && value.id){
+    const g=byId(value.id);
+    if(g)return g;
+  }
+
+  const likely=[
+    value.uri,
+    value.url,
+    value.icon,
+    value.iconHash,
+    value.source,
+    value.value,
+    value.image,
+    value.asset
+  ];
+
+  for(const child of likely){
+    const g=resolveGuild(child,depth+1,seen);
+    if(g)return g;
+  }
+
+  return null;
 }
 
 function iconUrl(guild){
@@ -48,7 +144,6 @@ function iconUrl(guild){
     }
   }catch{}
 
-  // Fallback to Discord's normal CDN icon location.
   if(guild.id && guild.icon){
     return `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.webp?size=64`;
   }
@@ -63,12 +158,13 @@ function initials(name){
   return (parts[0][0]+parts[1][0]).toUpperCase();
 }
 
-function CompactGuildRow({guild}){
+function CompactGuildVisual({guild}){
   const React=ReactObj();
   const R=RN();
   if(!React || !R?.View || !R?.Text)return null;
 
   const url=iconUrl(guild);
+
   const icon = url && R.Image
     ? React.createElement(R.Image,{
         source:{uri:url},
@@ -118,11 +214,12 @@ function CompactGuildRow({guild}){
       importantForAccessibility:"no-hide-descendants",
       style:{
         width:ROW_WIDTH,
-        height:ROW_HEIGHT,
+        height:VISUAL_HEIGHT,
         flexDirection:"row",
         alignItems:"center",
+        paddingHorizontal:H_PAD,
         backgroundColor:"#2b2d31",
-        borderRadius:4,
+        borderRadius:5,
         overflow:"hidden"
       }
     },
@@ -148,48 +245,36 @@ function CompactGuildRow({guild}){
   );
 }
 
-function compactOriginal(ret){
-  const React=ReactObj();
-  if(!React || !ret || typeof ret!=="object")return ret;
-
-  try{
-    return React.cloneElement(ret,{
-      style:[
-        ret.props?.style,
-        {
-          width:ROW_WIDTH,
-          height:ROW_HEIGHT,
-          minWidth:ROW_WIDTH,
-          maxWidth:ROW_WIDTH,
-          minHeight:ROW_HEIGHT,
-          maxHeight:ROW_HEIGHT
-        }
-      ]
-    });
-  }catch{
-    return ret;
-  }
-}
-
-function afterGuildRender(args,ret){
+// This is the key v1.0 change: patch the component that actually changes when
+// Discord recycles a guild-bar cell, rather than decorating only the first
+// GuildsBarGuild render associated with that native cell.
+function afterGuildIconInner(args,ret){
   try{
     const props=args?.[0];
-    const guild=getGuild(props?.guildId);
-    if(!guild)return;
+    let guild=resolveGuild(props?.value);
+
+    if(!guild && props){
+      guild=resolveGuild(props);
+    }
+
+    if(!guild){
+      unresolvedSeen++;
+      if(unresolvedSeen===25){
+        // No identifying values are exposed on this build; keep original icon
+        // rather than breaking it. No private values are logged.
+        console.warn("[ServerNames] Some GuildIconInner values could not be mapped to GuildStore.");
+      }
+      return;
+    }
+
+    if(!successShown){
+      successShown=true;
+      setTimeout(()=>toast(`Server Names ${VERSION}: recycled-cell icon patch active.`),200);
+    }
 
     const React=ReactObj();
     const R=RN();
     if(!React || !R?.View)return;
-
-    if(!successShown){
-      successShown=true;
-      setTimeout(()=>toast(`Server Names ${VERSION}: compact rows active.`),200);
-    }
-
-    // Keep Discord's original interactive row in place (transparent) so its
-    // tap/long-press/accessibility behavior remains owned by Discord. The
-    // compact visual row sits above it and ignores pointer events.
-    const original=compactOriginal(ret);
 
     return React.createElement(
       R.View,
@@ -197,48 +282,40 @@ function afterGuildRender(args,ret){
         style:{
           width:ROW_WIDTH,
           height:ROW_HEIGHT,
-          minWidth:ROW_WIDTH,
-          maxWidth:ROW_WIDTH,
-          minHeight:ROW_HEIGHT,
-          maxHeight:ROW_HEIGHT,
-          position:"relative",
+          alignItems:"center",
+          justifyContent:"center",
           overflow:"visible"
         }
       },
-      React.createElement(
-        R.View,
-        {
-          style:{
-            position:"absolute",
-            left:0,
-            top:0,
-            width:ROW_WIDTH,
-            height:ROW_HEIGHT,
-            opacity:0.01,
-            overflow:"hidden"
-          }
-        },
-        original
-      ),
-      React.createElement(
-        R.View,
-        {
-          pointerEvents:"none",
-          style:{
-            position:"absolute",
-            left:0,
-            top:0,
-            width:ROW_WIDTH,
-            height:ROW_HEIGHT,
-            zIndex:1000,
-            elevation:20
-          }
-        },
-        React.createElement(CompactGuildRow,{guild})
-      )
+      React.createElement(CompactGuildVisual,{guild})
     );
   }catch(error){
-    console.error("[ServerNames] GuildsBarGuild patch failed:",error);
+    console.error("[ServerNames] GuildIconInner patch failed:",error);
+  }
+}
+
+// Geometry only. The visual content now comes from GuildIconInner, so this
+// wrapper can safely be recycled without carrying a stale guild name.
+function afterGuildRender(args,ret){
+  try{
+    const React=ReactObj();
+    if(!React || !ret || typeof ret!=="object")return;
+
+    return React.cloneElement(ret,{
+      style:[
+        ret.props?.style,
+        {
+          width:ROW_WIDTH,
+          minWidth:ROW_WIDTH,
+          maxWidth:ROW_WIDTH,
+          height:ROW_HEIGHT,
+          minHeight:ROW_HEIGHT,
+          maxHeight:ROW_HEIGHT
+        }
+      ]
+    });
+  }catch(error){
+    console.error("[ServerNames] GuildsBarGuild geometry patch failed:",error);
   }
 }
 
@@ -247,9 +324,8 @@ function afterAnimatedItemRender(args,ret){
     const props=args?.[0];
     const id=props?.id;
 
-    // Only compress wrappers that correspond to an actual guild. This avoids
-    // changing folders, Home/DMs, separators, or other special guild-bar rows.
-    if(!getGuild(id))return;
+    // Avoid compressing folders / DMs / separators.
+    if(!byId(id))return;
 
     const React=ReactObj();
     if(!React || !ret || typeof ret!=="object")return;
@@ -259,9 +335,9 @@ function afterAnimatedItemRender(args,ret){
         ret.props?.style,
         {
           width:ROW_WIDTH,
-          height:ROW_HEIGHT,
           minWidth:ROW_WIDTH,
           maxWidth:ROW_WIDTH,
+          height:ROW_HEIGHT,
           minHeight:ROW_HEIGHT,
           maxHeight:ROW_HEIGHT
         }
@@ -290,16 +366,6 @@ function widenRoot(ret){
   }catch{
     return ret;
   }
-}
-
-function afterGuildsOnlyRender(args,ret){
-  try{return widenRoot(ret);}
-  catch(error){console.error("[ServerNames] GuildsOnly width patch failed:",error);}
-}
-
-function afterUnreadBarsRender(args,ret){
-  try{return widenRoot(ret);}
-  catch(error){console.error("[ServerNames] unread-bar width patch failed:",error);}
 }
 
 function patchTypeByName(name,callback,required=false){
@@ -333,12 +399,14 @@ function start(){
     null;
 
   if(!GuildStore)throw new Error("GuildStore not found.");
+  rebuildGuildIndex();
 
-  // The row patch is the core behavior and is required.
-  patchTypeByName("GuildsBarGuild",afterGuildRender,true);
+  // Required: actual recycled icon renderer.
+  patchTypeByName("GuildIconInner",afterGuildIconInner,true);
 
-  // These sizing patches are best-effort because Discord occasionally changes
-  // which wrappers own the list geometry.
+  // Layout geometry.
+  patchTypeByName("GuildsBarGuild",afterGuildRender,false);
+
   const itemPatched=patchTypeByName(
     "GuildsBarAnimatedItemWrapper",
     afterAnimatedItemRender,
@@ -347,20 +415,20 @@ function start(){
 
   const sidebarPatched=patchTypeByName(
     "GuildsOnly",
-    afterGuildsOnlyRender,
+    (args,ret)=>widenRoot(ret),
     false
   );
 
   patchTypeByName(
     "GuildsBarUnreadBars",
-    afterUnreadBarsRender,
+    (args,ret)=>widenRoot(ret),
     false
   );
 
   toast(
     `Server Names ${VERSION}: ` +
-    `row patch on; sidebar ${sidebarPatched?"widened":"width fallback"}; ` +
-    `item spacing ${itemPatched?"compact":"fallback"}.`
+    `sidebar ${sidebarPatched?"widened":"width fallback"}; ` +
+    `32px touch rows ${itemPatched?"active":"fallback"}.`
   );
 }
 
@@ -369,8 +437,10 @@ function stop(){
     try{u?.();}catch(e){console.error("[ServerNames] unpatch failed:",e);}
   }
 
+  iconToGuild.clear();
   GuildStore=null;
   successShown=false;
+  unresolvedSeen=0;
   V=null;
 }
 
