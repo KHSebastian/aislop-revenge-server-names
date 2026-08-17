@@ -1,6 +1,6 @@
 {
-  "name": "Server Names (Outer Width Probe)",
-  "description": "Privacy-preserving probe for the outer Discord guild drawer width.",
+  "name": "Server Names (Width Sequence Probe)",
+  "description": "Privacy-preserving JSX sequence probe for the outer Discord guild sidebar width.",
   "authors": [
     {
       "name": "Local build",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "007f0b38a1965516a6fa373043f97963ba81ed816c468cca01110d399aa74aad",
+  "hash": "94d211c453f8d4bf800da8c9f64314886d7f829902009cd06ff88fbb4806f611",
   "vendetta": {
     "icon": "ic_server"
   }
