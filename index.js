@@ -1,24 +1,33 @@
 (()=>{"use strict";
+
 let V=null;
 let GuildStore=null;
+let storage=null;
 let unpatchers=[];
-let iconToGuild=new Map();
 let successShown=false;
-let unresolvedSeen=0;
 
-const VERSION="1.0-recycled-cells";
+const VERSION="1.1-settings";
 
-// Wider text list, but with a larger hit target than v0.8/v0.9.
-const SIDEBAR_WIDTH=128;
-const ROW_WIDTH=120;
-const ROW_HEIGHT=32;
-const VISUAL_HEIGHT=28;
-const ICON_SIZE=20;
-const H_PAD=4;
-const NAME_GAP=5;
-const NAME_RIGHT_PAD=6;
+const DEFAULTS={
+  width:112,
+  height:24,
+  fontSize:10,
+  iconSize:20,
+  padding:4
+};
+
+const LIMITS={
+  width:[72,220],
+  height:[18,56],
+  fontSize:[7,20],
+  iconSize:[12,48],
+  padding:[0,16]
+};
 
 function api(){
+  try{
+    if(typeof vendetta!=="undefined" && vendetta)return vendetta;
+  }catch{}
   return globalThis.vendetta ?? globalThis.bunny ?? globalThis.revenge ?? null;
 }
 
@@ -35,103 +44,40 @@ function RN(){
   return V?.metro?.common?.ReactNative ?? globalThis.ReactNative ?? null;
 }
 
-function guilds(){
-  try{
-    const all=GuildStore?.getGuilds?.();
-    return all && typeof all==="object" ? Object.values(all) : [];
-  }catch{
-    return [];
-  }
+function clampNumber(value,key){
+  const fallback=DEFAULTS[key];
+  const range=LIMITS[key];
+  let n=Number(value);
+  if(!Number.isFinite(n))n=fallback;
+  n=Math.round(n);
+  return Math.max(range[0],Math.min(range[1],n));
 }
 
-function rebuildGuildIndex(){
-  iconToGuild.clear();
-  for(const g of guilds()){
-    if(!g?.id)continue;
-
-    iconToGuild.set(String(g.id),g);
-
-    if(g.icon){
-      const key=String(g.icon);
-      // Only use an icon hash if it maps unambiguously.
-      if(!iconToGuild.has(key))iconToGuild.set(key,g);
-      else if(iconToGuild.get(key)!==g)iconToGuild.set(key,null);
+function ensureSettings(){
+  if(!storage)return;
+  for(const key of Object.keys(DEFAULTS)){
+    if(storage[key]==null || !Number.isFinite(Number(storage[key]))){
+      storage[key]=DEFAULTS[key];
+    }else{
+      storage[key]=clampNumber(storage[key],key);
     }
-
-    try{
-      const u=typeof g.getIconURL==="function" ? (g.getIconURL(64,false) ?? g.getIconURL()) : null;
-      if(typeof u==="string" && u)iconToGuild.set(u,g);
-    }catch{}
   }
 }
 
-function byId(id){
-  if(id==null)return null;
-  try{return GuildStore?.getGuild?.(String(id)) ?? null;}
+function cfg(){
+  return {
+    width:clampNumber(storage?.width,"width"),
+    height:clampNumber(storage?.height,"height"),
+    fontSize:clampNumber(storage?.fontSize,"fontSize"),
+    iconSize:clampNumber(storage?.iconSize,"iconSize"),
+    padding:clampNumber(storage?.padding,"padding")
+  };
+}
+
+function getGuild(guildId){
+  if(!guildId || !GuildStore)return null;
+  try{return GuildStore.getGuild?.(String(guildId)) ?? null;}
   catch{return null;}
-}
-
-function resolveString(s){
-  if(typeof s!=="string" || !s)return null;
-
-  const direct=byId(s);
-  if(direct)return direct;
-
-  const cdn=s.match(/\/icons\/(\d{15,22})\//);
-  if(cdn){
-    const g=byId(cdn[1]);
-    if(g)return g;
-  }
-
-  const mapped=iconToGuild.get(s);
-  return mapped || null;
-}
-
-function resolveGuild(value,depth=0,seen=new Set()){
-  if(value==null || depth>3)return null;
-
-  if(typeof value==="string")return resolveString(value);
-  if(typeof value==="number")return byId(value);
-
-  if(typeof value!=="object")return null;
-  if(seen.has(value))return null;
-  seen.add(value);
-
-  const directIds=[
-    value.guildId,
-    value.guildID,
-    value.id,
-    value.guild?.id
-  ];
-
-  for(const id of directIds){
-    const g=byId(id);
-    if(g)return g;
-  }
-
-  if(value.guild?.name && value.guild?.id)return value.guild;
-  if(value.name && value.id){
-    const g=byId(value.id);
-    if(g)return g;
-  }
-
-  const likely=[
-    value.uri,
-    value.url,
-    value.icon,
-    value.iconHash,
-    value.source,
-    value.value,
-    value.image,
-    value.asset
-  ];
-
-  for(const child of likely){
-    const g=resolveGuild(child,depth+1,seen);
-    if(g)return g;
-  }
-
-  return null;
 }
 
 function iconUrl(guild){
@@ -158,20 +104,22 @@ function initials(name){
   return (parts[0][0]+parts[1][0]).toUpperCase();
 }
 
-function CompactGuildVisual({guild}){
+function CompactVisual({guild}){
   const React=ReactObj();
   const R=RN();
   if(!React || !R?.View || !R?.Text)return null;
 
+  const c=cfg();
+  const iconSize=Math.min(c.iconSize,c.height);
   const url=iconUrl(guild);
 
-  const icon = url && R.Image
+  const icon=url && R.Image
     ? React.createElement(R.Image,{
         source:{uri:url},
         resizeMode:"cover",
         style:{
-          width:ICON_SIZE,
-          height:ICON_SIZE,
+          width:iconSize,
+          height:iconSize,
           borderRadius:3,
           flexShrink:0
         }
@@ -180,8 +128,8 @@ function CompactGuildVisual({guild}){
         R.View,
         {
           style:{
-            width:ICON_SIZE,
-            height:ICON_SIZE,
+            width:iconSize,
+            height:iconSize,
             borderRadius:3,
             flexShrink:0,
             alignItems:"center",
@@ -196,8 +144,7 @@ function CompactGuildVisual({guild}){
             numberOfLines:1,
             style:{
               color:"#f2f3f5",
-              fontSize:8,
-              lineHeight:10,
+              fontSize:Math.max(6,Math.min(c.fontSize-1,9)),
               fontWeight:"700",
               textAlign:"center"
             }
@@ -213,11 +160,11 @@ function CompactGuildVisual({guild}){
       accessibilityElementsHidden:true,
       importantForAccessibility:"no-hide-descendants",
       style:{
-        width:ROW_WIDTH,
-        height:VISUAL_HEIGHT,
+        width:c.width,
+        height:c.height,
         flexDirection:"row",
         alignItems:"center",
-        paddingHorizontal:H_PAD,
+        paddingHorizontal:4,
         backgroundColor:"#2b2d31",
         borderRadius:5,
         overflow:"hidden"
@@ -232,11 +179,11 @@ function CompactGuildVisual({guild}){
         allowFontScaling:false,
         style:{
           flex:1,
-          marginLeft:NAME_GAP,
-          marginRight:NAME_RIGHT_PAD,
+          marginLeft:5,
+          marginRight:5,
           color:"#f2f3f5",
-          fontSize:10,
-          lineHeight:13,
+          fontSize:c.fontSize,
+          lineHeight:Math.max(c.fontSize+3,12),
           fontWeight:"600"
         }
       },
@@ -245,121 +192,102 @@ function CompactGuildVisual({guild}){
   );
 }
 
-// This is the key v1.0 change: patch the component that actually changes when
-// Discord recycles a guild-bar cell, rather than decorating only the first
-// GuildsBarGuild render associated with that native cell.
-function afterGuildIconInner(args,ret){
+/*
+ * Base this on v0.7's confirmed-working direct GuildsBarGuild.type patch.
+ * Deliberately do NOT patch GuildsBarAnimatedItemWrapper height: that was the
+ * major geometry change introduced when the ~21-cell virtualization regression
+ * appeared. The returned guild row itself reports the compact touch height and
+ * lets Discord's wrapper measure it naturally.
+ */
+function afterGuildRender(args,ret){
   try{
     const props=args?.[0];
-    let guild=resolveGuild(props?.value);
-
-    if(!guild && props){
-      guild=resolveGuild(props);
-    }
-
-    if(!guild){
-      unresolvedSeen++;
-      if(unresolvedSeen===25){
-        // No identifying values are exposed on this build; keep original icon
-        // rather than breaking it. No private values are logged.
-        console.warn("[ServerNames] Some GuildIconInner values could not be mapped to GuildStore.");
-      }
-      return;
-    }
-
-    if(!successShown){
-      successShown=true;
-      setTimeout(()=>toast(`Server Names ${VERSION}: recycled-cell icon patch active.`),200);
-    }
+    const guild=getGuild(props?.guildId);
+    if(!guild)return;
 
     const React=ReactObj();
     const R=RN();
     if(!React || !R?.View)return;
 
+    const c=cfg();
+    const touchHeight=c.height+(c.padding*2);
+
+    if(!successShown){
+      successShown=true;
+      setTimeout(()=>toast(`Server Names ${VERSION}: full-list row patch active.`),200);
+    }
+
     return React.createElement(
       R.View,
       {
         style:{
-          width:ROW_WIDTH,
-          height:ROW_HEIGHT,
+          width:c.width,
+          height:touchHeight,
+          position:"relative",
           alignItems:"center",
           justifyContent:"center",
           overflow:"visible"
         }
       },
-      React.createElement(CompactGuildVisual,{guild})
+
+      // Preserve Discord's original interactive row, but hide its visuals.
+      // Opacity 0 keeps React Native hit testing active.
+      React.createElement(
+        R.View,
+        {
+          style:{
+            position:"absolute",
+            left:0,
+            top:0,
+            width:c.width,
+            height:touchHeight,
+            opacity:0,
+            overflow:"hidden",
+            zIndex:0,
+            elevation:0
+          }
+        },
+        ret
+      ),
+
+      // Visible row. Padding above/below belongs to the touch target, not the box.
+      React.createElement(
+        R.View,
+        {
+          pointerEvents:"none",
+          style:{
+            position:"absolute",
+            left:0,
+            top:c.padding,
+            width:c.width,
+            height:c.height,
+            zIndex:10,
+            elevation:10
+          }
+        },
+        React.createElement(CompactVisual,{guild})
+      )
     );
   }catch(error){
-    console.error("[ServerNames] GuildIconInner patch failed:",error);
+    console.error("[ServerNames] GuildsBarGuild patch failed:",error);
   }
 }
 
-// Geometry only. The visual content now comes from GuildIconInner, so this
-// wrapper can safely be recycled without carrying a stale guild name.
-function afterGuildRender(args,ret){
-  try{
-    const React=ReactObj();
-    if(!React || !ret || typeof ret!=="object")return;
-
-    return React.cloneElement(ret,{
-      style:[
-        ret.props?.style,
-        {
-          width:ROW_WIDTH,
-          minWidth:ROW_WIDTH,
-          maxWidth:ROW_WIDTH,
-          height:ROW_HEIGHT,
-          minHeight:ROW_HEIGHT,
-          maxHeight:ROW_HEIGHT
-        }
-      ]
-    });
-  }catch(error){
-    console.error("[ServerNames] GuildsBarGuild geometry patch failed:",error);
-  }
-}
-
-function afterAnimatedItemRender(args,ret){
-  try{
-    const props=args?.[0];
-    const id=props?.id;
-
-    // Avoid compressing folders / DMs / separators.
-    if(!byId(id))return;
-
-    const React=ReactObj();
-    if(!React || !ret || typeof ret!=="object")return;
-
-    return React.cloneElement(ret,{
-      style:[
-        ret.props?.style,
-        {
-          width:ROW_WIDTH,
-          minWidth:ROW_WIDTH,
-          maxWidth:ROW_WIDTH,
-          height:ROW_HEIGHT,
-          minHeight:ROW_HEIGHT,
-          maxHeight:ROW_HEIGHT
-        }
-      ]
-    });
-  }catch(error){
-    console.error("[ServerNames] animated-item sizing patch failed:",error);
-  }
-}
-
-function widenRoot(ret){
+function widenSidebar(ret){
   const React=ReactObj();
   if(!React || !ret || typeof ret!=="object")return ret;
 
+  const c=cfg();
+  const sidebarWidth=c.width+8;
+
   try{
     return React.cloneElement(ret,{
       style:[
         ret.props?.style,
         {
-          width:SIDEBAR_WIDTH,
-          minWidth:SIDEBAR_WIDTH,
-          maxWidth:SIDEBAR_WIDTH
+          width:sidebarWidth,
+          minWidth:sidebarWidth,
+          maxWidth:sidebarWidth
         }
       ]
     });
@@ -381,9 +309,204 @@ function patchTypeByName(name,callback,required=false){
   return false;
 }
 
+function NumericSetting({label,settingKey,suffix}){
+  const React=ReactObj();
+  const R=RN();
+  const current=clampNumber(storage?.[settingKey],settingKey);
+  const [text,setText]=React.useState(String(current));
+
+  const commit=(raw)=>{
+    const value=clampNumber(raw,settingKey);
+    storage[settingKey]=value;
+    setText(String(value));
+    toast(`${label}: ${value}${suffix??""}. Reload Discord to apply everywhere.`);
+  };
+
+  return React.createElement(
+    R.View,
+    {
+      style:{
+        marginHorizontal:16,
+        marginVertical:6,
+        padding:12,
+        borderRadius:8,
+        backgroundColor:"#2b2d31",
+        flexDirection:"row",
+        alignItems:"center"
+      }
+    },
+    React.createElement(
+      R.View,
+      {style:{flex:1,paddingRight:12}},
+      React.createElement(
+        R.Text,
+        {
+          style:{
+            color:"#f2f3f5",
+            fontSize:15,
+            fontWeight:"600"
+          }
+        },
+        label
+      ),
+      React.createElement(
+        R.Text,
+        {
+          style:{
+            color:"#b5bac1",
+            fontSize:12,
+            marginTop:2
+          }
+        },
+        `Allowed: ${LIMITS[settingKey][0]}–${LIMITS[settingKey][1]}${suffix??""}`
+      )
+    ),
+    React.createElement(R.TextInput,{
+      value:text,
+      onChangeText:setText,
+      onEndEditing:()=>commit(text),
+      onSubmitEditing:()=>commit(text),
+      keyboardType:"number-pad",
+      selectTextOnFocus:true,
+      maxLength:4,
+      style:{
+        width:70,
+        minHeight:38,
+        paddingHorizontal:8,
+        paddingVertical:6,
+        borderRadius:6,
+        backgroundColor:"#1e1f22",
+        color:"#f2f3f5",
+        fontSize:15,
+        textAlign:"center"
+      }
+    })
+  );
+}
+
+function SettingsPage(){
+  const React=ReactObj();
+  const R=RN();
+  if(!React || !R?.View || !R?.Text || !R?.ScrollView || !R?.TextInput){
+    return null;
+  }
+
+  const [,rerender]=React.useReducer(x=>x+1,0);
+
+  const reset=()=>{
+    for(const [key,value] of Object.entries(DEFAULTS))storage[key]=value;
+    rerender();
+    toast("Server Names settings reset. Reload Discord to apply.");
+  };
+
+  const c=cfg();
+  const touchHeight=c.height+(2*c.padding);
+
+  return React.createElement(
+    R.ScrollView,
+    {
+      style:{flex:1,backgroundColor:"#111214"},
+      contentContainerStyle:{paddingVertical:12,paddingBottom:36}
+    },
+
+    React.createElement(
+      R.Text,
+      {
+        style:{
+          marginHorizontal:16,
+          marginBottom:4,
+          color:"#f2f3f5",
+          fontSize:20,
+          fontWeight:"700"
+        }
+      },
+      "Server Names"
+    ),
+
+    React.createElement(
+      R.Text,
+      {
+        style:{
+          marginHorizontal:16,
+          marginBottom:10,
+          color:"#b5bac1",
+          fontSize:13,
+          lineHeight:18
+        }
+      },
+      `Current touch target: ${touchHeight}px tall. Changes are saved immediately; reload Discord after editing layout values.`
+    ),
+
+    React.createElement(NumericSetting,{
+      key:"width-"+c.width,
+      label:"Width",
+      settingKey:"width",
+      suffix:" px"
+    }),
+    React.createElement(NumericSetting,{
+      key:"height-"+c.height,
+      label:"Height",
+      settingKey:"height",
+      suffix:" px"
+    }),
+    React.createElement(NumericSetting,{
+      key:"font-"+c.fontSize,
+      label:"Font size",
+      settingKey:"fontSize",
+      suffix:" px"
+    }),
+    React.createElement(NumericSetting,{
+      key:"icon-"+c.iconSize,
+      label:"Icon size",
+      settingKey:"iconSize",
+      suffix:" px"
+    }),
+    React.createElement(NumericSetting,{
+      key:"padding-"+c.padding,
+      label:"Vertical padding",
+      settingKey:"padding",
+      suffix:" px"
+    }),
+
+    React.createElement(
+      R.View,
+      {style:{marginHorizontal:16,marginTop:12}},
+      React.createElement(
+        R.Pressable ?? R.TouchableOpacity,
+        {
+          onPress:reset,
+          style:{
+            minHeight:44,
+            borderRadius:8,
+            backgroundColor:"#4e5058",
+            alignItems:"center",
+            justifyContent:"center",
+            paddingHorizontal:14
+          }
+        },
+        React.createElement(
+          R.Text,
+          {
+            style:{
+              color:"#ffffff",
+              fontSize:14,
+              fontWeight:"600"
+            }
+          },
+          "Reset defaults"
+        )
+      )
+    )
+  );
+}
+
 function start(){
   V=api();
   if(!V?.metro)throw new Error("Revenge Metro API not found.");
+
+  storage=V.plugin?.storage ?? null;
+  if(!storage)throw new Error("Revenge plugin storage was not provided.");
+  ensureSettings();
 
   const patcher=V.patcher ?? V.api?.patcher;
   if(!patcher?.after)throw new Error("Revenge patcher.after not found.");
@@ -399,36 +522,25 @@ function start(){
     null;
 
   if(!GuildStore)throw new Error("GuildStore not found.");
-  rebuildGuildIndex();
 
-  // Required: actual recycled icon renderer.
-  patchTypeByName("GuildIconInner",afterGuildIconInner,true);
-
-  // Layout geometry.
-  patchTypeByName("GuildsBarGuild",afterGuildRender,false);
-
-  const itemPatched=patchTypeByName(
-    "GuildsBarAnimatedItemWrapper",
-    afterAnimatedItemRender,
-    false
-  );
+  patchTypeByName("GuildsBarGuild",afterGuildRender,true);
 
   const sidebarPatched=patchTypeByName(
     "GuildsOnly",
-    (args,ret)=>widenRoot(ret),
+    (args,ret)=>widenSidebar(ret),
     false
   );
 
   patchTypeByName(
     "GuildsBarUnreadBars",
-    (args,ret)=>widenRoot(ret),
+    (args,ret)=>widenSidebar(ret),
     false
   );
 
+  const c=cfg();
   toast(
-    `Server Names ${VERSION}: ` +
-    `sidebar ${sidebarPatched?"widened":"width fallback"}; ` +
-    `32px touch rows ${itemPatched?"active":"fallback"}.`
+    `Server Names ${VERSION}: ${c.width}×${c.height}px, `+
+    `${c.padding}px padding; sidebar ${sidebarPatched?"widened":"fallback"}.`
   );
 }
 
@@ -437,12 +549,17 @@ function stop(){
     try{u?.();}catch(e){console.error("[ServerNames] unpatch failed:",e);}
   }
 
-  iconToGuild.clear();
   GuildStore=null;
+  storage=null;
   successShown=false;
-  unresolvedSeen=0;
   V=null;
 }
 
-return {default:{onLoad:start,onUnload:stop}};
+return {
+  default:{
+    onLoad:start,
+    onUnload:stop,
+    settings:SettingsPage
+  }
+};
 })()
