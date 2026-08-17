@@ -1,6 +1,6 @@
 {
-  "name": "Server Names",
-  "description": "Configurable compact Discord Android server-name sidebar with synchronized FastList geometry.",
+  "name": "Server Names (Outer Width Probe)",
+  "description": "Privacy-preserving probe for the outer Discord guild drawer width.",
   "authors": [
     {
       "name": "Local build",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "957c0890772f1b0530cc7855f29182dfb88a9147248d6a071b90f147f8268a17",
+  "hash": "007f0b38a1965516a6fa373043f97963ba81ed816c468cca01110d399aa74aad",
   "vendetta": {
     "icon": "ic_server"
   }
