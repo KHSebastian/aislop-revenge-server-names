@@ -1,176 +1,166 @@
 (()=>{"use strict";
 let V=null;
+let GuildStore=null;
 let unpatchers=[];
-let timer=null;
-let jsxCalls=0;
-let namedCalls=0;
-let candidates=new Map();
-let errors=[];
+let replacements=0;
+let reportedSuccess=false;
 
-const VERSION="0.5-obfuscated";
+const VERSION="0.6-targeted";
+const WRAPPER_SIZE=56;
+const TILE_SIZE=48;
 
-function api(){return globalThis.vendetta ?? globalThis.bunny ?? globalThis.revenge ?? null;}
+function api(){
+  return globalThis.vendetta ?? globalThis.bunny ?? globalThis.revenge ?? null;
+}
 
 function toast(msg){
   try{(V??api())?.ui?.toasts?.showToast?.(String(msg));}
-  catch(e){console.error("[ServerNames Probe] toast failed",e);}
-}
-
-function alertReport(text){
-  const v=V??api();
-  try{
-    v?.ui?.alerts?.showConfirmationAlert?.({
-      title:"Server Names probe report",
-      content:text,
-      confirmText:"OK",
-      onConfirm:()=>{},
-      secondaryConfirmText:"Copy",
-      onConfirmSecondary:()=>{
-        try{
-          const cb=v?.metro?.common?.clipboard;
-          const r=cb?.setString?.(text);
-          if(r?.catch)r.catch(()=>{});
-          toast("Probe report copied.");
-        }catch(e){console.error("[ServerNames Probe] copy failed",e);}
-      },
-      isDismissable:true
-    });
-  }catch(e){
-    console.error("[ServerNames Probe] alert failed",e);
-    toast(text.slice(0,240));
-  }
-}
-
-// Non-cryptographic, one-way short hash used only to correlate repeated values
-// in the diagnostic report without exposing actual guild names/IDs.
-function obfuscate(value){
-  if(value==null)return null;
-  const s=String(value);
-  let h=2166136261;
-  for(let i=0;i<s.length;i++){
-    h^=s.charCodeAt(i);
-    h=Math.imul(h,16777619);
-  }
-  return "ref_"+(h>>>0).toString(16).padStart(8,"0");
+  catch(e){console.error("[ServerNames] toast failed:",e);}
 }
 
 function cname(C){
-  try{return C?.displayName ?? C?.name ?? C?.type?.displayName ?? C?.type?.name ?? "(anonymous)";}
-  catch{return "(name-error)";}
+  try{return C?.displayName ?? C?.name ?? C?.type?.displayName ?? C?.type?.name ?? "";}
+  catch{return "";}
 }
 
-function safeKeys(o){
-  try{return o && typeof o==="object" ? Object.keys(o).slice(0,35) : [];}
-  catch{return [];}
+function ReactObj(){
+  return V?.metro?.common?.React ?? globalThis.React ?? null;
 }
 
-function looksInteresting(name,props){
-  if(!props||typeof props!=="object") return false;
-
-  const keys=safeKeys(props);
-  const keyText=keys.join("|").toLowerCase();
-  const nameText=String(name).toLowerCase();
-
-  if(/guild|server|avatar|icon/.test(nameText)) return true;
-  if(/guild|server|avatar|icon/.test(keyText)) return true;
-
-  const direct=[props.guild,props.server,props.guildNode,props.node?.guild,props.item?.guild];
-  if(direct.some(x=>x&&typeof x==="object")) return true;
-
-  return false;
+function RN(){
+  return V?.metro?.common?.ReactNative ?? globalThis.ReactNative ?? null;
 }
 
-function summarize(name,props){
-  let guildName=null;
-  let guildId=null;
+function guildName(guildId){
+  if(!guildId || !GuildStore)return null;
+  try{return GuildStore.getGuild?.(String(guildId))?.name ?? null;}
+  catch{return null;}
+}
 
-  try{
-    const g=props?.guild ?? props?.server ?? props?.guildNode?.guild ?? props?.node?.guild ?? props?.item?.guild;
-    guildName=g?.name ?? null;
-    guildId=g?.id ?? props?.guildId ?? props?.guildID ?? props?.serverId ?? null;
-  }catch{}
+function NameOverlay({name}){
+  const React=ReactObj();
+  const ReactNative=RN();
+  const {View,Text}=ReactNative;
 
-  const keys=safeKeys(props).join(",");
-  return {
-    name:String(name),
-    keys,
-    guildNameRef:obfuscate(guildName),
-    guildIdRef:obfuscate(guildId)
-  };
+  return React.createElement(
+    View,
+    {
+      pointerEvents:"none",
+      accessibilityElementsHidden:true,
+      importantForAccessibility:"no-hide-descendants",
+      style:{
+        position:"absolute",
+        left:(WRAPPER_SIZE-TILE_SIZE)/2,
+        top:(WRAPPER_SIZE-TILE_SIZE)/2,
+        width:TILE_SIZE,
+        height:TILE_SIZE,
+        borderRadius:12,
+        backgroundColor:"#2b2d31",
+        alignItems:"center",
+        justifyContent:"center",
+        paddingHorizontal:3,
+        paddingVertical:2,
+        zIndex:1000,
+        elevation:20
+      }
+    },
+    React.createElement(
+      Text,
+      {
+        numberOfLines:4,
+        ellipsizeMode:"tail",
+        adjustsFontSizeToFit:true,
+        minimumFontScale:0.45,
+        allowFontScaling:false,
+        style:{
+          width:TILE_SIZE-6,
+          color:"#f2f3f5",
+          fontSize:9,
+          lineHeight:10,
+          fontWeight:"600",
+          textAlign:"center"
+        }
+      },
+      name
+    )
+  );
+}
+
+function GuildNameWrapped({original,guildId}){
+  const React=ReactObj();
+  const ReactNative=RN();
+  const {View}=ReactNative;
+  const name=guildName(guildId);
+
+  if(!name)return original;
+
+  replacements++;
+  if(!reportedSuccess && replacements>=1){
+    reportedSuccess=true;
+    setTimeout(()=>toast(`Server Names ${VERSION}: replacing guild icons.`),250);
+  }
+
+  return React.createElement(
+    View,
+    {
+      style:{
+        width:WRAPPER_SIZE,
+        height:WRAPPER_SIZE,
+        position:"relative",
+        alignItems:"center",
+        justifyContent:"center"
+      }
+    },
+    original,
+    React.createElement(NameOverlay,{name})
+  );
 }
 
 function hook(args,ret){
-  jsxCalls++;
   try{
-    const C=args?.[0];
+    const Component=args?.[0];
     const props=args?.[1] ?? ret?.props;
-    const name=cname(C);
+    if(cname(Component)!=="GuildsBarGuild")return;
 
-    if(name && name!=="(anonymous)") namedCalls++;
+    const guildId=props?.guildId;
+    if(!guildId)return;
 
-    if(looksInteresting(name,props)){
-      const s=summarize(name,props);
-      const key=`${s.name}|${s.keys}|${s.guildNameRef??""}|${s.guildIdRef??""}`;
-      if(!candidates.has(key) && candidates.size<80) candidates.set(key,s);
-    }
-  }catch(e){
-    if(errors.length<10) errors.push(String(e?.stack??e));
-  }
-}
+    const React=ReactObj();
+    if(!React)return;
 
-function report(){
-  const rows=[...candidates.values()];
-  const lines=[
-    `Version: ${VERSION}`,
-    `JSX calls observed: ${jsxCalls}`,
-    `Named component calls: ${namedCalls}`,
-    `Interesting candidates: ${rows.length}`,
-    "",
-    "Privacy: guild/server names and IDs are obfuscated before being stored in this report.",
-    ""
-  ];
-
-  if(rows.length===0){
-    lines.push("NO CANDIDATES FOUND.");
-    lines.push("");
-    lines.push(
-      jsxCalls===0
-        ? "The patched JSX runtime is not being used by the live Discord UI."
-        : "The JSX hook is active, but the current server list does not expose obvious guild/server/icon props through this runtime."
-    );
-  }else{
-    rows.forEach((r,i)=>{
-      lines.push(
-        `${i+1}. ${r.name}` +
-        `${r.guildNameRef ? ` | guild=${r.guildNameRef}` : ""}` +
-        `${r.guildIdRef ? ` | id=${r.guildIdRef}` : ""}`
-      );
-      lines.push(`   props: ${r.keys || "(none)"}`);
+    return React.createElement(GuildNameWrapped,{
+      original:ret,
+      guildId:String(guildId)
     });
+  }catch(error){
+    console.error("[ServerNames] GuildsBarGuild hook failed:",error);
   }
-
-  if(errors.length){
-    lines.push("","HOOK ERRORS:");
-    errors.forEach((e,i)=>lines.push(`${i+1}. ${e}`));
-  }
-
-  const text=lines.join("\n");
-  console.log("[ServerNames Probe report]\n"+text);
-  alertReport(text);
 }
 
 function start(){
   V=api();
-  if(!V?.metro) throw new Error("Revenge Metro API not found.");
+  if(!V?.metro)throw new Error("Revenge Metro API not found.");
 
   const patcher=V.patcher ?? V.api?.patcher;
-  if(!patcher?.after) throw new Error("Revenge patcher.after not found.");
+  if(!patcher?.after)throw new Error("Revenge patcher.after not found.");
+
+  const ReactNative=RN();
+  if(!ReactObj() || !ReactNative?.View || !ReactNative?.Text){
+    throw new Error("React/React Native components unavailable.");
+  }
+
+  GuildStore=
+    V.metro.findByStoreName?.("GuildStore") ??
+    V.metro.findByProps?.("getGuild","getGuilds") ??
+    null;
+
+  if(!GuildStore)throw new Error("GuildStore not found.");
 
   const jsxRuntime=
     V.metro.findByProps?.("jsx","jsxs") ??
     V.metro.findByProps?.("jsx","jsxDEV");
 
-  if(!jsxRuntime) throw new Error("Discord JSX runtime not found.");
+  if(!jsxRuntime)throw new Error("Discord JSX runtime not found.");
 
   if(typeof jsxRuntime.jsx==="function")
     unpatchers.push(patcher.after("jsx",jsxRuntime,hook));
@@ -179,15 +169,18 @@ function start(){
   if(typeof jsxRuntime.jsxDEV==="function")
     unpatchers.push(patcher.after("jsxDEV",jsxRuntime,hook));
 
-  if(!unpatchers.length) throw new Error("No JSX functions could be patched.");
+  if(!unpatchers.length)throw new Error("No JSX runtime functions could be patched.");
 
-  toast("Server Names obfuscated probe active — open the server list now. Report appears in 15 seconds.");
-  timer=setTimeout(report,15000);
+  toast(`Server Names ${VERSION} enabled. Open the server list.`);
 }
 
 function stop(){
-  if(timer){clearTimeout(timer);timer=null;}
-  for(const u of unpatchers.splice(0)){try{u?.();}catch{}}
+  for(const u of unpatchers.splice(0)){
+    try{u?.();}catch(e){console.error("[ServerNames] unpatch failed:",e);}
+  }
+  GuildStore=null;
+  replacements=0;
+  reportedSuccess=false;
   V=null;
 }
 

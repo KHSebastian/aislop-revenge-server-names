@@ -1,6 +1,6 @@
 {
-  "name": "Server Names (Obfuscated Probe)",
-  "description": "Privacy-preserving runtime probe for identifying Discord Android server-list components.",
+  "name": "Server Names",
+  "description": "Replaces Discord Android server icons with persistent server-name tiles.",
   "authors": [
     {
       "name": "Local build",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "ea08a129f6697e1fc8c058cfcb98bc90c5f02b92ef522a330157f59276cce402",
+  "hash": "fb1259bf6e9760c136d0ec8efc6b66039e0826a8bb9ba1f3f26132dc10f2e5ec",
   "vendetta": {
     "icon": "ic_server"
   }
