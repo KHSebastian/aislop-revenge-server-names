@@ -1,6 +1,6 @@
 {
-  "name": "Server Names (Width Sequence Probe)",
-  "description": "Privacy-preserving JSX sequence probe for the outer Discord guild sidebar width.",
+  "name": "Server Names",
+  "description": "Configurable compact Discord Android server-name sidebar.",
   "authors": [
     {
       "name": "Local build",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "94d211c453f8d4bf800da8c9f64314886d7f829902009cd06ff88fbb4806f611",
+  "hash": "ba24c631d3241f44e8bb7969a4dd2b5b90d12dadc5ba88db34eec13348e81daa",
   "vendetta": {
     "icon": "ic_server"
   }

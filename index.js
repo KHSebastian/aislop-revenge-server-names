@@ -1,22 +1,32 @@
 (()=>{"use strict";
 
 let V=null;
+let GuildStore=null;
+let storage=null;
 let unpatchers=[];
-let timer=null;
+let successShown=false;
+let fastListSeen=false;
+let guildPressablesPatched=0;
 
-const VERSION="1.5-width-sequence-probe";
-const ring=[];
-const windows=[];
-const widthEntries=[];
-let activeWindows=[];
-let seq=0;
+const VERSION="1.7";
 
-const TRIGGERS=new Set([
-  "GuildsOnly",
-  "NavigationContent",
-  "ChatPanelNativeStackNavigator",
-  "FastList"
-]);
+const DEFAULTS={
+  width:112,
+  sidebarWidth:120,
+  height:24,
+  fontSize:10,
+  iconSize:20,
+  padding:4
+};
+
+const LIMITS={
+  width:[72,240],
+  sidebarWidth:[72,280],
+  height:[18,56],
+  fontSize:[7,20],
+  iconSize:[12,48],
+  padding:[0,18]
+};
 
 function api(){
   try{if(typeof vendetta!=="undefined"&&vendetta)return vendetta;}catch{}
@@ -24,261 +34,585 @@ function api(){
 }
 
 function toast(msg){
-  try{(V??api())?.ui?.toasts?.showToast?.(String(msg));}catch{}
+  try{(V??api())?.ui?.toasts?.showToast?.(String(msg));}
+  catch(e){console.error("[ServerNames] toast failed:",e);}
 }
 
-function cname(C){
-  try{return C?.displayName ?? C?.name ?? C?.type?.displayName ?? C?.type?.name ?? "(anonymous)";}
-  catch{return "(name-error)";}
+function ReactObj(){
+  return V?.metro?.common?.React ?? globalThis.React ?? null;
+}
+
+function RN(){
+  return V?.metro?.common?.ReactNative ?? globalThis.ReactNative ?? null;
+}
+
+function clampNumber(value,key){
+  const fallback=DEFAULTS[key];
+  const [min,max]=LIMITS[key];
+  let n=Number(value);
+  if(!Number.isFinite(n))n=fallback;
+  n=Math.round(n);
+  return Math.max(min,Math.min(max,n));
+}
+
+function ensureSettings(){
+  if(!storage)return;
+  for(const key of Object.keys(DEFAULTS)){
+    storage[key]=clampNumber(storage[key] ?? DEFAULTS[key],key);
+  }
+}
+
+function cfg(){
+  return {
+    width:clampNumber(storage?.width,"width"),
+    sidebarWidth:clampNumber(storage?.sidebarWidth,"sidebarWidth"),
+    height:clampNumber(storage?.height,"height"),
+    fontSize:clampNumber(storage?.fontSize,"fontSize"),
+    iconSize:clampNumber(storage?.iconSize,"iconSize"),
+    padding:clampNumber(storage?.padding,"padding")
+  };
+}
+
+function dimensions(){
+  const c=cfg();
+  return {
+    ...c,
+    touchHeight:c.height+(c.padding*2),
+    sidebarWidth:Math.max(c.sidebarWidth,c.width)
+  };
+}
+
+function getGuild(guildId){
+  if(!guildId || !GuildStore)return null;
+  try{return GuildStore.getGuild?.(String(guildId)) ?? null;}
+  catch{return null;}
+}
+
+function iconUrl(guild){
+  if(!guild)return null;
+  try{
+    if(typeof guild.getIconURL==="function"){
+      const u=guild.getIconURL(64,false) ?? guild.getIconURL();
+      if(typeof u==="string" && u)return u;
+    }
+  }catch{}
+  if(guild.id && guild.icon){
+    return `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.webp?size=64`;
+  }
+  return null;
+}
+
+function initials(name){
+  const parts=String(name??"").trim().split(/\s+/).filter(Boolean);
+  if(!parts.length)return "?";
+  if(parts.length===1)return parts[0].slice(0,2).toUpperCase();
+  return (parts[0][0]+parts[1][0]).toUpperCase();
+}
+
+function CompactVisual({guild}){
+  const React=ReactObj();
+  const R=RN();
+  if(!React || !R?.View || !R?.Text)return null;
+
+  const c=cfg();
+  const iconSize=Math.min(c.iconSize,c.height);
+  const url=iconUrl(guild);
+
+  const icon=url && R.Image
+    ? React.createElement(R.Image,{
+        source:{uri:url},
+        resizeMode:"cover",
+        style:{
+          width:iconSize,
+          height:iconSize,
+          borderRadius:3,
+          flexShrink:0
+        }
+      })
+    : React.createElement(
+        R.View,
+        {
+          style:{
+            width:iconSize,
+            height:iconSize,
+            borderRadius:3,
+            flexShrink:0,
+            alignItems:"center",
+            justifyContent:"center",
+            backgroundColor:"#404249"
+          }
+        },
+        React.createElement(
+          R.Text,
+          {
+            allowFontScaling:false,
+            numberOfLines:1,
+            style:{
+              color:"#f2f3f5",
+              fontSize:Math.max(6,Math.min(c.fontSize-1,9)),
+              fontWeight:"700",
+              textAlign:"center"
+            }
+          },
+          initials(guild.name)
+        )
+      );
+
+  return React.createElement(
+    R.View,
+    {
+      pointerEvents:"none",
+      accessibilityElementsHidden:true,
+      importantForAccessibility:"no-hide-descendants",
+      style:{
+        width:c.width,
+        height:c.height,
+        flexDirection:"row",
+        alignItems:"center",
+        paddingHorizontal:4,
+        backgroundColor:"#2b2d31",
+        borderRadius:5,
+        overflow:"hidden"
+      }
+    },
+    icon,
+    React.createElement(
+      R.Text,
+      {
+        numberOfLines:1,
+        ellipsizeMode:"tail",
+        allowFontScaling:false,
+        style:{
+          flex:1,
+          marginLeft:5,
+          marginRight:5,
+          color:"#f2f3f5",
+          fontSize:c.fontSize,
+          lineHeight:Math.max(c.fontSize+3,12),
+          fontWeight:"600"
+        }
+      },
+      guild.name
+    )
+  );
+}
+
+/*
+ * Proven full-list patch from the v0.7 line: patch GuildsBarGuild.type itself.
+ * The stock interactive content stays mounted and invisible beneath our row.
+ */
+function afterGuildRender(args,ret){
+  try{
+    const props=args?.[0];
+    const guild=getGuild(props?.guildId);
+    if(!guild)return;
+
+    const React=ReactObj();
+    const R=RN();
+    if(!React || !R?.View)return;
+
+    const d=dimensions();
+
+    if(!successShown){
+      successShown=true;
+      setTimeout(()=>toast(`Server Names ${VERSION}: guild rows active.`),150);
+    }
+
+    return React.createElement(
+      R.View,
+      {
+        style:{
+          width:d.sidebarWidth,
+          height:d.touchHeight,
+          position:"relative",
+          alignItems:"center",
+          justifyContent:"center",
+          overflow:"visible"
+        }
+      },
+
+      // Original Discord control: invisible, but still receives touch/long-press.
+      React.createElement(
+        R.View,
+        {
+          style:{
+            position:"absolute",
+            left:0,
+            top:0,
+            width:d.sidebarWidth,
+            height:d.touchHeight,
+            opacity:0,
+            overflow:"hidden",
+            zIndex:0,
+            elevation:0
+          }
+        },
+        ret
+      ),
+
+      // Visible compact record centered in the wider hit/rail area.
+      React.createElement(
+        R.View,
+        {
+          pointerEvents:"none",
+          style:{
+            position:"absolute",
+            left:Math.max(0,(d.sidebarWidth-d.width)/2),
+            top:d.padding,
+            width:d.width,
+            height:d.height,
+            zIndex:10,
+            elevation:10
+          }
+        },
+        React.createElement(CompactVisual,{guild})
+      )
+    );
+  }catch(error){
+    console.error("[ServerNames] GuildsBarGuild patch failed:",error);
+  }
+}
+
+function componentName(C){
+  try{
+    return C?.displayName ?? C?.name ?? C?.type?.displayName ?? C?.type?.name ?? "";
+  }catch{return "";}
 }
 
 function flattenStyle(style){
   try{
-    const SS=V?.metro?.common?.ReactNative?.StyleSheet;
+    const SS=RN()?.StyleSheet;
     if(SS?.flatten)return SS.flatten(style) ?? {};
   }catch{}
+
   if(Array.isArray(style)){
-    const o={};
-    for(const p of style){
-      const f=flattenStyle(p);
-      if(f&&typeof f==="object")Object.assign(o,f);
+    const out={};
+    for(const part of style){
+      const flat=flattenStyle(part);
+      if(flat&&typeof flat==="object")Object.assign(out,flat);
     }
-    return o;
+    return out;
   }
-  return style&&typeof style==="object"?style:{};
+
+  return style&&typeof style==="object" ? style : {};
 }
 
-function safeStyle(style){
-  const flat=flattenStyle(style);
-  const out={};
-  const allowed=/^(width|height|minWidth|maxWidth|minHeight|maxHeight|flex|flexGrow|flexShrink|flexBasis|left|right|top|bottom|margin.*|padding.*|overflow|position|transform)$/;
-  for(const [k,v] of Object.entries(flat??{})){
-    if(!allowed.test(k))continue;
-    if(typeof v==="number" || typeof v==="string" || typeof v==="boolean")out[k]=v;
-    else if(k==="transform" && Array.isArray(v)){
-      const safe=[];
-      for(const t of v){
-        if(!t||typeof t!=="object")continue;
-        const small={};
-        for(const [tk,tv] of Object.entries(t)){
-          if(/^(translateX|translateY|scale|scaleX|scaleY)$/.test(tk) && typeof tv==="number")small[tk]=tv;
-        }
-        if(Object.keys(small).length)safe.push(small);
-      }
-      if(safe.length)out[k]=safe;
-    }
-  }
-  return out;
+function near(a,b,tolerance=0.5){
+  return typeof a==="number" && Math.abs(a-b)<=tolerance;
 }
 
-function safeLayoutProps(props){
-  const out={};
-  if(!props||typeof props!=="object")return out;
+/*
+ * Probe v1.5 identified the stock guild pressable by this exact layout:
+ * width 72, height 60, paddingTop/Bottom 6, paddingLeft 12.
+ * This element effectively defines the guild rail's stock width.
+ */
+function isStockGuildPressable(props){
+  if(!props || typeof props!=="object")return false;
 
-  const exact=/^(width|height|minWidth|maxWidth|minHeight|maxHeight|drawerWidth|sidebarWidth|panelWidth|contentWidth|barWidth|itemSize|estimatedItemSize|layoutSize|chunkBase|insetStart|insetEnd|footerSize|sectionSize)$/i;
-
-  for(const [k,v] of Object.entries(props)){
-    if(!exact.test(k))continue;
-
-    if(typeof v==="number" || typeof v==="boolean"){
-      out[k]=v;
-    }else if(typeof v==="string"){
-      if(/^-?\d+(?:\.\d+)?%?$/.test(v))out[k]=v;
-    }else if(typeof v==="function"){
-      out[k]="[function]";
-    }else if(v&&typeof v==="object"){
-      // Numeric layout object only.
-      const small={};
-      for(const [sk,sv] of Object.entries(v)){
-        if(/width|height|size|offset|length|start|end/i.test(sk) && typeof sv==="number")small[sk]=sv;
-      }
-      if(Object.keys(small).length)out[k]=small;
-    }
-  }
-
-  for(const styleKey of ["style","contentContainerStyle","containerStyle","drawerStyle","sceneContainerStyle"]){
-    if(props[styleKey]!=null){
-      const s=safeStyle(props[styleKey]);
-      if(Object.keys(s).length)out[styleKey]=s;
-    }
-  }
-
-  // screenOptions is common on React Navigation. Record key names only, plus
-  // any static layout numbers/styles if it is an object. Never execute it.
-  if(props.screenOptions && typeof props.screenOptions==="object"){
-    const so={};
-    for(const [k,v] of Object.entries(props.screenOptions)){
-      if(/width|height|drawer|contentStyle|sceneStyle|presentation/i.test(k)){
-        if(typeof v==="number" || typeof v==="boolean" || typeof v==="string")so[k]=v;
-        else if(/style/i.test(k)){
-          const s=safeStyle(v);
-          if(Object.keys(s).length)so[k]=s;
-        }
-      }
-    }
-    if(Object.keys(so).length)out.screenOptions=so;
-  }else if(typeof props.screenOptions==="function"){
-    out.screenOptions="[function]";
-  }
-
-  return out;
-}
-
-function entryFrom(args,ret){
-  const C=args?.[0];
-  const props=args?.[1] ?? ret?.props ?? {};
-  const name=cname(C);
-  const layout=safeLayoutProps(props);
-  return {
-    seq:++seq,
-    name,
-    layout,
-    propNames:Object.keys(props)
-      .filter(k=>![
-        "children","id","guildId","guild","name","label","text","title",
-        "source","uri","url","user","userId","channel","channelId","message"
-      ].includes(k))
-      .slice(0,24)
-  };
-}
-
-function isLayoutRelevant(e){
+  const s=flattenStyle(props.style);
   return (
-    TRIGGERS.has(e.name) ||
-    /drawer|panel|sidebar|navigation|stack|content|container|guild|fastlist|scroll|view/i.test(e.name) ||
-    Object.keys(e.layout).length>0
+    near(s.width,72) &&
+    near(s.height,60) &&
+    near(s.paddingTop,6) &&
+    near(s.paddingBottom,6) &&
+    near(s.paddingLeft,12) &&
+    props.accessibilityState!=null &&
+    Array.isArray(props.accessibilityActions) &&
+    typeof props.onAccessibilityAction==="function" &&
+    (
+      typeof props.onClick==="function" ||
+      typeof props.onResponderRelease==="function"
+    )
   );
 }
 
-function pushRing(e){
-  ring.push(e);
-  if(ring.length>35)ring.shift();
+function patchGuildPressable(ret,props){
+  const React=ReactObj();
+  if(!React || !ret || typeof ret!=="object")return ret;
+
+  const d=dimensions();
+  guildPressablesPatched++;
+
+  return React.cloneElement(ret,{
+    style:[
+      props.style,
+      {
+        width:d.sidebarWidth,
+        minWidth:d.sidebarWidth,
+        maxWidth:d.sidebarWidth,
+        height:d.touchHeight,
+        minHeight:d.touchHeight,
+        maxHeight:d.touchHeight,
+        paddingTop:0,
+        paddingBottom:0,
+        paddingLeft:0,
+        paddingRight:0
+      }
+    ]
+  });
 }
 
-function beginWindow(trigger,e){
-  if(windows.length>=8)return;
-  const w={
-    trigger,
-    triggerSeq:e.seq,
-    entries:ring.slice(-25),
-    remaining:35
-  };
-  windows.push(w);
-  activeWindows.push(w);
-}
-
-function feedWindows(e){
-  const still=[];
-  for(const w of activeWindows){
-    if(w.remaining>0){
-      w.entries.push(e);
-      w.remaining--;
+function widenedStyle(style){
+  const d=dimensions();
+  return [
+    style,
+    {
+      width:d.sidebarWidth,
+      minWidth:d.sidebarWidth,
+      maxWidth:d.sidebarWidth
     }
-    if(w.remaining>0)still.push(w);
+  ];
+}
+
+/*
+ * Preserve FastList's special rows. The stock guild row is 60px; separators
+ * in the probe were 13px. Only replace ~60px results with our configured
+ * touch height.
+ */
+function patchItemSize(original){
+  const target=dimensions().touchHeight;
+
+  if(typeof original==="number"){
+    return near(original,60,2) ? target : original;
   }
-  activeWindows=still;
+
+  if(typeof original==="function"){
+    return function(){
+      const old=original.apply(this,arguments);
+      return near(old,60,2) ? target : old;
+    };
+  }
+
+  return original;
+}
+
+function isGuildFastList(props){
+  return !!(
+    props &&
+    typeof props==="object" &&
+    "sections" in props &&
+    "itemSize" in props &&
+    typeof props.renderItem==="function" &&
+    typeof props.renderSection==="function" &&
+    typeof props.getRecyclerKey==="function" &&
+    ("persistantKeys" in props || "disableRecyclingOnFullCompute" in props)
+  );
 }
 
 function afterJsx(args,ret){
   try{
-    const e=entryFrom(args,ret);
+    const C=args?.[0];
+    const props=args?.[1] ?? ret?.props ?? {};
+    const name=componentName(C);
+    const React=ReactObj();
 
-    // Feed existing capture windows before possibly starting a new one.
-    feedWindows(e);
-
-    if(isLayoutRelevant(e)){
-      pushRing(e);
-
-      const hasWidth=
-        ["width","minWidth","maxWidth","drawerWidth","sidebarWidth","panelWidth","contentWidth","barWidth"]
-          .some(k=>k in e.layout) ||
-        ["style","containerStyle","drawerStyle","sceneContainerStyle","contentContainerStyle"]
-          .some(k=>e.layout[k] && (
-            "width" in e.layout[k] ||
-            "minWidth" in e.layout[k] ||
-            "maxWidth" in e.layout[k]
-          ));
-
-      if(hasWidth && widthEntries.length<80){
-        widthEntries.push(e);
-      }
+    if(isStockGuildPressable(props)){
+      return patchGuildPressable(ret,props);
     }
 
-    if(TRIGGERS.has(e.name)){
-      const already=windows.some(w=>w.trigger===e.name);
-      if(!already)beginWindow(e.name,e);
+    if(name==="FastList" && isGuildFastList(props)){
+      fastListSeen=true;
+      if(!React || !ret || typeof ret!=="object")return;
+
+      return React.cloneElement(ret,{
+        itemSize:patchItemSize(props.itemSize),
+        style:widenedStyle(props.style)
+      });
+    }
+
+    if(name==="GuildsOnly"){
+      if(!React || !ret || typeof ret!=="object")return;
+      return React.cloneElement(ret,{
+        style:widenedStyle(props.style)
+      });
     }
   }catch(error){
-    console.error("[ServerNames Width Sequence Probe] hook failed:",error);
+    console.error("[ServerNames] JSX layout patch failed:",error);
   }
 }
 
-function fmtEntry(e){
-  let line=`#${e.seq} ${e.name}`;
-  if(Object.keys(e.layout).length)line+=` layout=${JSON.stringify(e.layout)}`;
-  if(e.propNames.length)line+=` props=[${e.propNames.join(",")}]`;
-  return line;
+function patchTypeByName(name,callback,required=false){
+  const patcher=V.patcher ?? V.api?.patcher;
+  const wrapper=V.metro.findByTypeName?.(name);
+
+  if(wrapper && typeof wrapper.type==="function"){
+    unpatchers.push(patcher.after("type",wrapper,callback));
+    return true;
+  }
+
+  if(required)throw new Error(`${name} component was not found.`);
+  return false;
 }
 
-function report(){
-  const lines=[
-    `Version: ${VERSION}`,
-    "",
-    "PRIVACY:",
-    "Only React component names, prop NAMES, and layout-related numeric/style values are included.",
-    "Server/guild names and IDs, usernames, channels, messages, labels, image URLs, and text values are excluded.",
-    "",
-    `JSX sequence observed: ${seq}`,
-    `Trigger windows captured: ${windows.length}`,
-    `Width-bearing entries captured: ${widthEntries.length}`,
-    "",
-    "=== WIDTH-BEARING COMPONENTS ==="
-  ];
+function NumericSetting({label,settingKey,suffix}){
+  const React=ReactObj();
+  const R=RN();
+  const current=clampNumber(storage?.[settingKey],settingKey);
+  const [text,setText]=React.useState(String(current));
 
-  if(!widthEntries.length){
-    lines.push("No explicit width-bearing JSX props/styles were observed.");
-  }else{
-    for(const e of widthEntries)lines.push(fmtEntry(e));
-  }
+  const commit=(raw)=>{
+    const value=clampNumber(raw,settingKey);
+    storage[settingKey]=value;
+    setText(String(value));
+    toast(`${label}: ${value}${suffix??""}. Fully reload Discord to apply.`);
+  };
 
-  for(const w of windows){
-    lines.push("","");
-    lines.push(`=== WINDOW AROUND ${w.trigger} (#${w.triggerSeq}) ===`);
-    for(const e of w.entries){
-      lines.push(fmtEntry(e));
-    }
-  }
+  return React.createElement(
+    R.View,
+    {
+      style:{
+        marginHorizontal:16,
+        marginVertical:6,
+        padding:12,
+        borderRadius:8,
+        backgroundColor:"#2b2d31",
+        flexDirection:"row",
+        alignItems:"center"
+      }
+    },
+    React.createElement(
+      R.View,
+      {style:{flex:1,paddingRight:12}},
+      React.createElement(
+        R.Text,
+        {style:{color:"#f2f3f5",fontSize:15,fontWeight:"600"}},
+        label
+      ),
+      React.createElement(
+        R.Text,
+        {style:{color:"#b5bac1",fontSize:12,marginTop:2}},
+        `Allowed: ${LIMITS[settingKey][0]}–${LIMITS[settingKey][1]}${suffix??""}`
+      )
+    ),
+    React.createElement(R.TextInput,{
+      value:text,
+      onChangeText:setText,
+      onEndEditing:()=>commit(text),
+      onSubmitEditing:()=>commit(text),
+      keyboardType:"number-pad",
+      selectTextOnFocus:true,
+      maxLength:4,
+      style:{
+        width:70,
+        minHeight:38,
+        paddingHorizontal:8,
+        paddingVertical:6,
+        borderRadius:6,
+        backgroundColor:"#1e1f22",
+        color:"#f2f3f5",
+        fontSize:15,
+        textAlign:"center"
+      }
+    })
+  );
+}
 
-  const text=lines.join("\n");
+function SettingsPage(){
+  const React=ReactObj();
+  const R=RN();
+  if(!React || !R?.ScrollView || !R?.Text || !R?.TextInput)return null;
 
-  try{
-    V?.ui?.alerts?.showConfirmationAlert?.({
-      title:"Server Names width sequence probe",
-      content:text,
-      confirmText:"OK",
-      onConfirm:()=>{},
-      secondaryConfirmText:"Copy",
-      onConfirmSecondary:()=>{
-        try{
-          const cb=V?.metro?.common?.clipboard;
-          const r=cb?.setString?.(text);
-          if(r?.catch)r.catch(()=>{});
-          toast("Width sequence report copied.");
-        }catch{}
+  const [,rerender]=React.useReducer(x=>x+1,0);
+  const d=dimensions();
+
+  const reset=()=>{
+    for(const [key,value] of Object.entries(DEFAULTS))storage[key]=value;
+    rerender();
+    toast("Server Names settings reset. Fully reload Discord to apply.");
+  };
+
+  return React.createElement(
+    R.ScrollView,
+    {
+      style:{flex:1,backgroundColor:"#111214"},
+      contentContainerStyle:{paddingVertical:12,paddingBottom:36}
+    },
+
+    React.createElement(
+      R.Text,
+      {
+        style:{
+          marginHorizontal:16,
+          marginBottom:4,
+          color:"#f2f3f5",
+          fontSize:20,
+          fontWeight:"700"
+        }
       },
-      isDismissable:true
-    });
-  }catch{
-    console.log("[ServerNames Width Sequence Probe]\n"+text);
-  }
+      "Server Names"
+    ),
+
+    React.createElement(
+      R.Text,
+      {
+        style:{
+          marginHorizontal:16,
+          marginBottom:10,
+          color:"#b5bac1",
+          fontSize:13,
+          lineHeight:18
+        }
+      },
+      `Visible row: ${d.width}×${d.height}px. Touch height: ${d.touchHeight}px. Sidebar width: ${d.sidebarWidth}px. Fully reload Discord after layout changes.`
+    ),
+
+    React.createElement(NumericSetting,{key:"w"+d.width,label:"Row width",settingKey:"width",suffix:" px"}),
+    React.createElement(NumericSetting,{key:"sw"+d.sidebarWidth,label:"Sidebar width",settingKey:"sidebarWidth",suffix:" px"}),
+    React.createElement(NumericSetting,{key:"h"+d.height,label:"Height",settingKey:"height",suffix:" px"}),
+    React.createElement(NumericSetting,{key:"f"+d.fontSize,label:"Font size",settingKey:"fontSize",suffix:" px"}),
+    React.createElement(NumericSetting,{key:"i"+d.iconSize,label:"Icon size",settingKey:"iconSize",suffix:" px"}),
+    React.createElement(NumericSetting,{key:"p"+d.padding,label:"Vertical padding",settingKey:"padding",suffix:" px"}),
+
+    React.createElement(
+      R.View,
+      {style:{marginHorizontal:16,marginTop:12}},
+      React.createElement(
+        R.Pressable ?? R.TouchableOpacity,
+        {
+          onPress:reset,
+          style:{
+            minHeight:44,
+            borderRadius:8,
+            backgroundColor:"#4e5058",
+            alignItems:"center",
+            justifyContent:"center",
+            paddingHorizontal:14
+          }
+        },
+        React.createElement(
+          R.Text,
+          {style:{color:"#fff",fontSize:14,fontWeight:"600"}},
+          "Reset defaults"
+        )
+      )
+    )
+  );
 }
 
 function start(){
   V=api();
   if(!V?.metro)throw new Error("Revenge Metro API not found.");
 
+  storage=V.plugin?.storage ?? null;
+  if(!storage)throw new Error("Revenge plugin storage was not provided.");
+  ensureSettings();
+
   const patcher=V.patcher ?? V.api?.patcher;
   if(!patcher?.after)throw new Error("Revenge patcher.after not found.");
+
+  const R=RN();
+  if(!ReactObj() || !R?.View || !R?.Text){
+    throw new Error("React/React Native components unavailable.");
+  }
+
+  GuildStore=
+    V.metro.findByStoreName?.("GuildStore") ??
+    V.metro.findByProps?.("getGuild","getGuilds") ??
+    null;
+
+  if(!GuildStore)throw new Error("GuildStore not found.");
+
+  patchTypeByName("GuildsBarGuild",afterGuildRender,true);
 
   const jsxRuntime=
     V.metro.findByProps?.("jsx","jsxs") ??
@@ -293,15 +627,38 @@ function start(){
   if(typeof jsxRuntime.jsxDEV==="function")
     unpatchers.push(patcher.after("jsxDEV",jsxRuntime,afterJsx));
 
-  toast("Width sequence probe active. Open the server sidebar and leave it visible; report appears in 15 seconds.");
-  timer=setTimeout(report,15000);
+  const d=dimensions();
+  toast(
+    `Server Names ${VERSION}: row ${d.width}×${d.height}, `+
+    `sidebar ${d.sidebarWidth}px. Fully reload if just updated.`
+  );
+
+  setTimeout(()=>{
+    toast(
+      `Server Names ${VERSION}: FastList ${fastListSeen?"yes":"not seen"}, `+
+      `guild-width controls patched ${guildPressablesPatched}.`
+    );
+  },2500);
 }
 
 function stop(){
-  if(timer){clearTimeout(timer);timer=null;}
-  for(const u of unpatchers.splice(0)){try{u?.();}catch{}}
+  for(const u of unpatchers.splice(0)){
+    try{u?.();}catch(e){console.error("[ServerNames] unpatch failed:",e);}
+  }
+
+  GuildStore=null;
+  storage=null;
+  successShown=false;
+  fastListSeen=false;
+  guildPressablesPatched=0;
   V=null;
 }
 
-return {default:{onLoad:start,onUnload:stop}};
+return {
+  default:{
+    onLoad:start,
+    onUnload:stop,
+    settings:SettingsPage
+  }
+};
 })()
