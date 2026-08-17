@@ -7,8 +7,9 @@ let unpatchers=[];
 let successShown=false;
 let fastListSeen=false;
 let guildPressablesPatched=0;
+let mainTabsPanelFound=false;
 
-const VERSION="1.7";
+const VERSION="1.8";
 
 const DEFAULTS={
   width:112,
@@ -257,7 +258,7 @@ function afterGuildRender(args,ret){
           pointerEvents:"none",
           style:{
             position:"absolute",
-            left:Math.max(0,(d.sidebarWidth-d.width)/2),
+            left:4,
             top:d.padding,
             width:d.width,
             height:d.height,
@@ -339,7 +340,6 @@ function patchGuildPressable(ret,props){
       {
         width:d.sidebarWidth,
         minWidth:d.sidebarWidth,
-        maxWidth:d.sidebarWidth,
         height:d.touchHeight,
         minHeight:d.touchHeight,
         maxHeight:d.touchHeight,
@@ -357,11 +357,39 @@ function widenedStyle(style){
   return [
     style,
     {
-      width:d.sidebarWidth,
       minWidth:d.sidebarWidth,
-      maxWidth:d.sidebarWidth
+      flexShrink:0,
+      overflow:"visible"
     }
   ];
+}
+
+/*
+ * The v1.5 trace exposed MainTabsNavigatorPanel above the GuildsOnly route.
+ * Patch its rendered root with a minimum width only. This is intentionally
+ * non-destructive: if Discord's panel is already wider than the configured
+ * guild rail, it will not be shrunk.
+ */
+function afterMainTabsNavigatorPanel(args,ret){
+  try{
+    const React=ReactObj();
+    if(!React || !ret || typeof ret!=="object")return;
+
+    mainTabsPanelFound=true;
+
+    return React.cloneElement(ret,{
+      style:[
+        ret.props?.style,
+        {
+          minWidth:dimensions().sidebarWidth,
+          flexShrink:0,
+          overflow:"visible"
+        }
+      ]
+    });
+  }catch(error){
+    console.error("[ServerNames] MainTabsNavigatorPanel width patch failed:",error);
+  }
 }
 
 /*
@@ -408,6 +436,15 @@ function afterJsx(args,ret){
 
     if(isStockGuildPressable(props)){
       return patchGuildPressable(ret,props);
+    }
+
+    if(name==="MainTabsNavigatorPanel"){
+      mainTabsPanelFound=true;
+      if(React && ret && typeof ret==="object"){
+        return React.cloneElement(ret,{
+          style:widenedStyle(props.style)
+        });
+      }
     }
 
     if(name==="FastList" && isGuildFastList(props)){
@@ -614,6 +651,15 @@ function start(){
 
   patchTypeByName("GuildsBarGuild",afterGuildRender,true);
 
+  // Best-effort outer panel expansion. The JSX fallback below also catches
+  // builds where the wrapper has already been mounted.
+  const panelTypeFound=patchTypeByName(
+    "MainTabsNavigatorPanel",
+    afterMainTabsNavigatorPanel,
+    false
+  );
+  if(panelTypeFound)mainTabsPanelFound=true;
+
   const jsxRuntime=
     V.metro.findByProps?.("jsx","jsxs") ??
     V.metro.findByProps?.("jsx","jsxDEV");
@@ -636,6 +682,7 @@ function start(){
   setTimeout(()=>{
     toast(
       `Server Names ${VERSION}: FastList ${fastListSeen?"yes":"not seen"}, `+
+      `outer panel ${mainTabsPanelFound?"yes":"not seen"}, `+
       `guild-width controls patched ${guildPressablesPatched}.`
     );
   },2500);
@@ -651,6 +698,7 @@ function stop(){
   successShown=false;
   fastListSeen=false;
   guildPressablesPatched=0;
+  mainTabsPanelFound=false;
   V=null;
 }
 
