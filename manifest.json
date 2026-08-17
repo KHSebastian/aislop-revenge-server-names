@@ -1,6 +1,6 @@
 {
-  "name": "Server Names",
-  "description": "Replaces Discord server icons with compact persistent server-name labels.",
+  "name": "Server Names (Diagnostic)",
+  "description": "Diagnostic build: replaces server icons with names and shows startup failures in Discord.",
   "authors": [
     {
       "name": "Local build",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "d7bbe75d6b50b126279a7902ade0626b5a2483c3547ea04b8161c54c37a10873",
+  "hash": "4d31a5091c0ea8de7f96fecf4532c887ca6884fc9dc4837b14ca0eafbcd7d25f",
   "vendetta": {
     "icon": "ic_server"
   }
