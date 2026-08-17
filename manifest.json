@@ -1,0 +1,14 @@
+{
+  "name": "Server Names",
+  "description": "Replaces Discord server icons with compact persistent server-name labels.",
+  "authors": [
+    {
+      "name": "Local build",
+      "id": "0"
+    }
+  ],
+  "main": "src/index.js",
+  "vendetta": {
+    "icon": "ic_server"
+  }
+}
