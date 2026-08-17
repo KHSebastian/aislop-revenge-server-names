@@ -1,6 +1,6 @@
 {
-  "name": "Server Names (Diagnostic)",
-  "description": "Diagnostic build: replaces server icons with names and shows startup failures in Discord.",
+  "name": "Server Names (Probe)",
+  "description": "Temporary runtime probe to identify Discord Android server-list components for Server Names.",
   "authors": [
     {
       "name": "Local build",
@@ -8,7 +8,7 @@
     }
   ],
   "main": "index.js",
-  "hash": "4d31a5091c0ea8de7f96fecf4532c887ca6884fc9dc4837b14ca0eafbcd7d25f",
+  "hash": "812d00059e5d38cdfc7aeb1c3972ab22f479dce31c815ac77fb71cd76d815ee5",
   "vendetta": {
     "icon": "ic_server"
   }
